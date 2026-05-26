@@ -647,7 +647,7 @@ func writeAllowStaleBDStub(t *testing.T, dir string, supportsAllowStale bool) {
 		if supportsAllowStale {
 			script = `@echo off
 setlocal enableextensions
-if "%1"=="--allow-stale" exit /b 0
+if "%1"=="--allow-stale" echo bd test
 exit /b 0
 `
 		} else {
