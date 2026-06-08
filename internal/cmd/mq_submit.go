@@ -250,6 +250,13 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 		description += fmt.Sprintf("\nworker: %s", worker)
 	}
 
+	// Verify before either an idempotent success or a new MR registration.
+	// Refinery's later branch check is local-ref based, so missing/stale pushes
+	// must fail here instead of producing a delayed refinery rejection.
+	if err := verifyMQSubmitPushedBranch(g, branch, commitSHA); err != nil {
+		return err
+	}
+
 	// Check if MR bead already exists for this branch+SHA (idempotency)
 	var mrIssue *beads.Issue
 	var existingMR *beads.Issue
@@ -267,30 +274,6 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 		mrIssue = existingMR
 		fmt.Printf("%s MR already exists (idempotent)\n", style.Bold.Render("✓"))
 	} else {
-		// wa-skj: verify the branch (and exact commit, when known) is actually
-		// on origin before registering the MR. Without this gate, mq submit
-		// happily creates the MR + nudges refinery while the crew's git push
-		// may still be in flight, may have silently failed, or may never have
-		// run. Refinery's branch existence check is a local-bare-repo lookup,
-		// not a remote ls-remote, so its bare repo must have already fetched
-		// the branch — racing the crew's push. Result before this fix:
-		// refinery rejects ~90s later and mayor cherry-picks manually.
-		// Failing fast here gives the crew an actionable "push first" message
-		// instead of a delayed refinery rejection escalation.
-		if commitSHA != "" {
-			if err := g.VerifyPushedCommit("origin", branch, commitSHA); err != nil {
-				return fmt.Errorf("%w\n\nHint: run 'git push origin %s' first (or 'gt done'), then re-run 'gt mq submit'", err, branch)
-			}
-		} else {
-			exists, err := g.PushRemoteBranchExists("origin", branch)
-			if err != nil {
-				return fmt.Errorf("verify branch on origin: %w\n\nHint: run 'git push origin %s' first, then re-run 'gt mq submit'", err, branch)
-			}
-			if !exists {
-				return fmt.Errorf("branch %q not found on origin\n\nHint: run 'git push origin %s' first, then re-run 'gt mq submit'", branch, branch)
-			}
-		}
-
 		// Create MR bead (ephemeral wisp - will be cleaned up after merge)
 		mrIssue, err = bd.Create(beads.CreateOptions{
 			Title:       title,
@@ -383,6 +366,24 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 
 func resolveMQSubmitCommitSHA(g *git.Git, branch string) (string, error) {
 	return g.Rev(fmt.Sprintf("refs/heads/%s^{commit}", branch))
+}
+
+func verifyMQSubmitPushedBranch(g *git.Git, branch, commitSHA string) error {
+	if commitSHA != "" {
+		if err := g.VerifyPushedCommit("origin", branch, commitSHA); err != nil {
+			return fmt.Errorf("%w\n\nHint: run 'git push origin %s' first (or 'gt done'), then re-run 'gt mq submit'", err, branch)
+		}
+		return nil
+	}
+
+	exists, err := g.PushRemoteBranchExists("origin", branch)
+	if err != nil {
+		return fmt.Errorf("verify branch on origin: %w\n\nHint: run 'git push origin %s' first (or 'gt done'), then re-run 'gt mq submit'", err, branch)
+	}
+	if !exists {
+		return fmt.Errorf("branch %q not found on origin\n\nHint: run 'git push origin %s' first (or 'gt done'), then re-run 'gt mq submit'", branch, branch)
+	}
+	return nil
 }
 
 // checkMoleculeStepDeps verifies that all prerequisite molecule steps are closed

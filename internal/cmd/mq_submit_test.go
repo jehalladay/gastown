@@ -43,6 +43,44 @@ func TestResolveMQSubmitCommitSHAUsesSubmittedBranch(t *testing.T) {
 	}
 }
 
+func TestVerifyMQSubmitPushedBranchRequiresRemoteBranch(t *testing.T) {
+	repo := t.TempDir()
+	remote := t.TempDir()
+	runGitForMQSubmitTest(t, remote, "init", "--bare")
+
+	runGitForMQSubmitTest(t, repo, "init")
+	runGitForMQSubmitTest(t, repo, "config", "user.email", "test@example.com")
+	runGitForMQSubmitTest(t, repo, "config", "user.name", "Test User")
+	runGitForMQSubmitTest(t, repo, "remote", "add", "origin", remote)
+
+	writeMQSubmitTestFile(t, repo, "file.txt", "main\n")
+	runGitForMQSubmitTest(t, repo, "add", "file.txt")
+	runGitForMQSubmitTest(t, repo, "commit", "-m", "main")
+	runGitForMQSubmitTest(t, repo, "branch", "-M", "main")
+	runGitForMQSubmitTest(t, repo, "push", "-u", "origin", "main")
+
+	runGitForMQSubmitTest(t, repo, "checkout", "-b", "feature/pr-target")
+	writeMQSubmitTestFile(t, repo, "file.txt", "feature\n")
+	runGitForMQSubmitTest(t, repo, "commit", "-am", "feature")
+	featureSHA := runGitForMQSubmitTest(t, repo, "rev-parse", "HEAD")
+
+	g := gitpkg.NewGit(repo)
+	err := verifyMQSubmitPushedBranch(g, "feature/pr-target", featureSHA)
+	if err == nil {
+		t.Fatal("verifyMQSubmitPushedBranch() = nil, want missing remote branch error")
+	}
+	for _, want := range []string{"git push origin feature/pr-target", "gt done"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("verifyMQSubmitPushedBranch() error missing %q: %v", want, err)
+		}
+	}
+
+	runGitForMQSubmitTest(t, repo, "push", "origin", "feature/pr-target")
+	if err := verifyMQSubmitPushedBranch(g, "feature/pr-target", featureSHA); err != nil {
+		t.Fatalf("verifyMQSubmitPushedBranch() after push: %v", err)
+	}
+}
+
 func runGitForMQSubmitTest(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
