@@ -107,7 +107,7 @@ When `await-event` outputs `EFFORT: full`, run all steps thoroughly (normal mode
 
 The goal: idle cycles should burn ~10% of the tokens a full patrol uses."""
 formula = "mol-refinery-patrol"
-version = 15
+version = 16
 
 [vars]
 [vars.wisp_type]
@@ -577,13 +577,43 @@ Determine `<merge-target>` using the **Target Resolution Rule** above.
 
 **If merge_strategy = "direct" (default):**
 
+**Step 1.0 (direct only): CAPTURE PRE-MERGE TARGET TIP + AHEAD-GUARD (CRITICAL - phantom-close fix)**
+
+A no-op `--ff-only` merge of a branch that rebased to ZERO commits ahead exits 0,
+the subsequent push reports "Everything up-to-date" and exits 0, and the SHA-equality
+check below is then trivially true even though NOTHING LANDED. That mis-read is a
+PHANTOM CLOSE: work reported merged that never reached the target. Guard against it
+BEFORE merging.
+
+```bash
+git fetch origin
+PRE_MERGE_SHA=$(git rev-parse origin/<merge-target>)
+AHEAD=$(git rev-list --count origin/<merge-target>..temp)   # commits temp has that target lacks
+echo "Pre-merge target tip: $PRE_MERGE_SHA"
+echo "Commits ahead:        $AHEAD"
+```
+
+**If `AHEAD == 0`** → STOP. Do NOT merge, push, send MERGED, or close the MR as merged.
+The branch rebased to empty. Determine which case via the issue's work on the target:
+```bash
+git log origin/<merge-target> --oneline | grep "<issue-id>"
+```
+- Work IS present on target → close the MR with reason
+  *"Already landed on <merge-target> (verified by issue-id), no-op merge"* — an honest
+  close, NOT a phantom-merge. Send MERGED only if your lifecycle requires it for the
+  already-landed work; otherwise close the MR bead and archive. Then skip to loop-check.
+- Work is NOT present → **LOST WORK.** Send `FIX_NEEDED` to the polecat (per the
+  handle-failures template) and file a bug. **Never close as merged.** Skip to loop-check.
+
+**If `AHEAD > 0`** → proceed to the merge below.
+
 ```bash
 git checkout <merge-target>
 git merge --ff-only temp
 git push origin <merge-target>
 ```
 
-**Step 1.5 (direct only): VERIFY PUSH SUCCEEDED (CRITICAL - PATCH-003)**
+**Step 1.5 (direct only): VERIFY PUSH SUCCEEDED + TARGET ADVANCED (CRITICAL - PATCH-003 + phantom-close)**
 
 Push can fail silently (network, auth, hooks). IMMEDIATELY verify:
 ```bash
@@ -592,9 +622,18 @@ LOCAL_SHA=$(git rev-parse <merge-target>)
 REMOTE_SHA=$(git rev-parse origin/<merge-target>)
 echo "Local:  $LOCAL_SHA"
 echo "Remote: $REMOTE_SHA"
+echo "Pre:    $PRE_MERGE_SHA"
 ```
 
-**If SHAs match**: Push succeeded.
+**Push succeeded ONLY if BOTH hold:**
+- `LOCAL_SHA == REMOTE_SHA` (local and remote agree), AND
+- `REMOTE_SHA != PRE_MERGE_SHA` (the target actually moved).
+
+If `REMOTE_SHA == PRE_MERGE_SHA` the target did NOT advance — treat as a no-op that the
+AHEAD-guard missed: STOP, do NOT send MERGED, do NOT close as merged. Investigate as a
+rebase-to-empty (see Step 1.0).
+
+**If both conditions hold**: Push succeeded.
 
 **Step 1.6 (direct only): CHECK FOR OPEN PR ON BRANCH (gas-fk4)**
 

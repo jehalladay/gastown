@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -2055,6 +2056,23 @@ func (g *Git) IsAncestor(ancestor, descendant string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// CountAhead returns the number of commits that branch has which ref does not,
+// i.e. `git rev-list --count <ref>..<branch>`. A result of 0 means branch is not
+// ahead of ref — merging it would be a no-op. Used to refuse phantom merges where
+// a rebased branch dropped to zero commits ahead (rebase-to-empty), which would
+// otherwise produce a no-op merge that trivially satisfies SHA-equality checks.
+func (g *Git) CountAhead(ref, branch string) (int, error) {
+	out, err := g.run("rev-list", "--count", ref+".."+branch)
+	if err != nil {
+		return 0, err
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		return 0, fmt.Errorf("parse rev-list count %q: %w", out, err)
+	}
+	return n, nil
 }
 
 // Cherry runs `git cherry <upstream> <head>` to list commits on head that are

@@ -494,6 +494,7 @@ type ProcessResult struct {
 	BranchNotFound bool // Source branch no longer exists (e.g. cleaned up after cherry-pick)
 	NoMerge        bool // Source issue has no_merge flag — intentionally blocked, not a failure
 	NeedsApproval  bool // PR exists but lacks required approving review (merge_strategy=pr)
+	NoOp           bool // Branch is not ahead of target (rebased to empty) — merge refused, not a failure
 }
 
 // doMerge performs the actual git merge operation.
@@ -624,6 +625,23 @@ func (e *Engineer) doMerge(ctx context.Context, branch, target, sourceIssue stri
 	// The VCS provider (GitHub, Bitbucket) is selected via vcs_provider config.
 	if e.config.MergeStrategy == "pr" {
 		return e.doMergePR(ctx, branch, target)
+	}
+
+	// Step 4.6: No-op merge guard (phantom-close defense-in-depth).
+	// If the source branch is not ahead of the target — e.g. it rebased to empty
+	// because an equivalent patch already landed — a squash merge would stage
+	// nothing and "succeed" without anything reaching the target. Refuse it so the
+	// caller does not report a phantom merge.
+	ahead, aheadErr := e.git.CountAhead("origin/"+target, branch)
+	if aheadErr != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not count commits ahead of origin/%s: %v (continuing)\n", target, aheadErr)
+	} else if ahead == 0 {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Branch %s is 0 commits ahead of origin/%s — refusing no-op merge\n", branch, target)
+		return ProcessResult{
+			Success: false,
+			NoOp:    true,
+			Error:   "no-op merge refused: branch is not ahead of target (rebased to empty?)",
+		}
 	}
 
 	// Step 5: Perform the actual merge using squash merge

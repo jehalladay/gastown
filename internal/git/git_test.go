@@ -287,6 +287,54 @@ func TestCloneCannotTargetTownRootRuntimePaths(t *testing.T) {
 	assertTownRootSafetyPreserved(t, root, before)
 }
 
+func TestCountAhead(t *testing.T) {
+	dir := initTestRepo(t)
+	g := NewGit(dir)
+
+	commit := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		for _, args := range [][]string{{"add", "."}, {"commit", "-m", "c-" + name}} {
+			cmd := exec.Command("git", args...)
+			cmd.Dir = dir
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("git %v: %v", args, err)
+			}
+		}
+	}
+
+	// main has the initial commit; create a feature branch off it.
+	for _, args := range [][]string{{"branch", "feature"}, {"checkout", "feature"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+
+	// 0 commits ahead — the phantom-close case (rebased to empty).
+	n, err := g.CountAhead("main", "feature")
+	if err != nil {
+		t.Fatalf("CountAhead (0): %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("expected 0 commits ahead, got %d", n)
+	}
+
+	// 2 commits ahead.
+	commit("a.txt", "a")
+	commit("b.txt", "b")
+	n, err = g.CountAhead("main", "feature")
+	if err != nil {
+		t.Fatalf("CountAhead (2): %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("expected 2 commits ahead, got %d", n)
+	}
+}
+
 func TestIsRepo(t *testing.T) {
 	dir := t.TempDir()
 	g := NewGit(dir)
