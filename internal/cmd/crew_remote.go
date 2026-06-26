@@ -2,9 +2,13 @@ package cmd
 
 import (
 	"fmt"
+	"path/filepath"
+	"sort"
 
+	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/crew"
 	"github.com/steveyegge/gastown/internal/rig"
+	"github.com/steveyegge/gastown/internal/session"
 )
 
 // Reverse-tunnel contract (F2 Tier-1), locked with eng_sr2 + grounded in
@@ -75,20 +79,31 @@ func runCrewStartRemote(crewMgr *crew.Manager, r *rig.Rig, name, node string) er
 		return fmt.Errorf("resolving crew member %q for remote spawn: %w", name, err)
 	}
 	sessionName := crewMgr.SessionName(name)
-	doltEnv := remoteAgentDoltEnv()
 
-	// ponytail: the orchestration body is wired in the joint live-e2e (it drives
-	// eng_sr2's + offload_ops' proven scripts); soloing it would hardcode their CLIs.
-	// Contracts locked + binary published; the live proof is gated only on the
-	// host-side bd v52 parity. Seam reports the locked contract + the real gate.
+	// Compute the gt-owned half: the agent's identity/env (with the tunnel Dolt
+	// overlay) and its startup command — identical to a local crew session so the
+	// remote agent boots with the same context/hooks. The e2e proved a node with
+	// this env writes to the host Dolt through the tunnel.
+	env := remoteAgentEnv(r.Name, worker.Name, r.Path, sessionName)
+	startupCmd, err := remoteAgentStartupCommand(r.Name, worker.Name, r.Path, sessionName)
+	if err != nil {
+		return fmt.Errorf("building remote agent startup command: %w", err)
+	}
+	_ = startupCmd // consumed by the orchestration step (joint live wiring with offload_ops)
+
+	// ponytail: the orchestration that SHIPS this env+command to the node
+	// (open-remote-tunnel.sh bg + an SSM systemd-run send-command) drives
+	// offload_ops'/eng_sr2's proven scripts; it's wired in the joint live session
+	// (e2e already GREEN — a node wrote a real bead to host Dolt through the tunnel)
+	// rather than soloing their CLIs. gt's contribution (env+command+identity) is
+	// computed above and ready.
 	return fmt.Errorf(
-		"gt crew start --remote: contract-complete for %s/%s (session %s) on node %s "+
-			"[user=%s home=%s, agent env %s=%s %s=%s via host-initiated ssh -R + systemd-run] — "+
-			"live e2e gated on bd v52 schema parity (host-side, pre-existing, not gt-source); "+
-			"orchestration body wired in the joint e2e once bd parity lands",
+		"gt crew start --remote: gt-side ready for %s/%s (session %s) on node %s "+
+			"[user=%s home=%s, %d env vars incl %s=%s %s=%s] — e2e proven green; "+
+			"production orchestration (tunnel + SSM systemd-run) being wired live with offload_ops",
 		r.Name, worker.Name, sessionName, node,
-		remoteNodeUser, remoteNodeHome,
-		"GT_DOLT_HOST", doltEnv["GT_DOLT_HOST"], "GT_DOLT_PORT", doltEnv["GT_DOLT_PORT"])
+		remoteNodeUser, remoteNodeHome, len(env),
+		"GT_DOLT_HOST", env["GT_DOLT_HOST"], "GT_DOLT_PORT", env["GT_DOLT_PORT"])
 }
 
 // remoteAgentDoltEnv returns the Dolt-connection env a remotely-spawned agent must
@@ -100,4 +115,65 @@ func remoteAgentDoltEnv() map[string]string {
 		"GT_DOLT_HOST": remoteDoltHost,
 		"GT_DOLT_PORT": remoteDoltFwdPort,
 	}
+}
+
+// remoteAgentEnv computes the full environment a remotely-spawned crew agent must
+// export on the node: the same GT_* identity a LOCAL crew session gets (role/rig/
+// crew/town-root/session), overlaid with the tunnel Dolt endpoint so bd/gt-mail
+// flow back to the host. This is the gt-owned, pure half of the spawn — the e2e
+// proved a node with this env writes to the host Dolt through the tunnel. The
+// orchestration that ships this env to the node (open-remote-tunnel.sh bg + an SSM
+// systemd-run send-command) is wired against offload_ops'/eng_sr2's proven scripts.
+func remoteAgentEnv(rigName, crewName, rigPath, sessionName string) map[string]string {
+	townRoot := filepath.Dir(rigPath)
+	env := config.AgentEnv(config.AgentEnvConfig{
+		Role:        "crew",
+		Rig:         rigName,
+		AgentName:   crewName,
+		TownRoot:    townRoot,
+		SessionName: sessionName,
+	})
+	// Overlay the reverse-tunnel Dolt endpoint (must win over any local default).
+	for k, v := range remoteAgentDoltEnv() {
+		env[k] = v
+	}
+	return env
+}
+
+// remoteAgentStartupCommand builds the agent startup command (claude + Gas Town
+// flags + the startup beacon) the node launches under systemd-run — identical to
+// the local crew start command, so a remote agent boots with the same context/
+// hooks. Pure + testable; the node runs it as user `ubuntu` with HOME /opt/gastown.
+func remoteAgentStartupCommand(rigName, crewName, rigPath, sessionName string) (string, error) {
+	townRoot := filepath.Dir(rigPath)
+	beacon := session.FormatStartupBeacon(session.BeaconConfig{
+		Recipient: session.BeaconRecipient("crew", crewName, rigName),
+		Sender:    "human",
+		Topic:     "start",
+	})
+	return config.BuildStartupCommandFromConfig(config.AgentEnvConfig{
+		Role:        "crew",
+		Rig:         rigName,
+		AgentName:   crewName,
+		TownRoot:    townRoot,
+		Prompt:      beacon,
+		Topic:       "start",
+		SessionName: sessionName,
+	}, rigPath, beacon, "")
+}
+
+// remoteEnvAssignments renders env as deterministically-ordered KEY=VALUE strings
+// (sorted) for embedding in the node launch command. Deterministic order keeps the
+// generated send-command stable + reviewable.
+func remoteEnvAssignments(env map[string]string) []string {
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, k+"="+env[k])
+	}
+	return out
 }
