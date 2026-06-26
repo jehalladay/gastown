@@ -49,7 +49,7 @@ if [ -z "\${BASH_VERSION:-}" ]; then exec bash "\$0" "\$@"; fi
 set -uo pipefail
 export HOME=/opt/gastown; mkdir -p \$HOME; cd \$HOME
 export PATH="\$HOME/.local/bin:\$PATH"
-${FRESH:+export UV_NO_CACHE=1   # -f: bypass uv cache so git SDK deps re-fetch+rebuild — defeats the vibranium repeated-version stale-wheel trap (qa_load SDK-fix certs)}
+__FRESH_BLOCK__
 GHT=\$(curl -s "$GH_URL" | tr -d '\r\n'); [ -n "\$GHT" ] || { echo "[fatal] no PAT"; exit 1; }
 command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1
 export GIT_CONFIG_GLOBAL=\$HOME/.gitconfig-$WORK; : > \$GIT_CONFIG_GLOBAL
@@ -70,6 +70,19 @@ git remote set-url origin "https://github.com/$REPO_PATH"
 # Fail CLOSED: never silently test the default branch — gating the wrong code reads as a false PASS.
 git checkout "$BRANCH" 2>/dev/null || { echo "[fatal] branch $BRANCH not found — refusing to run on default"; exit 3; }
 JOBEOF
+
+# -f freshness: bypass uv's package cache (UV_NO_CACHE) AND prune the PERSISTED hatch env. The node's
+# HOME=/opt/gastown survives across jobs, and hatch reuses a venv keyed by a hash that does NOT change
+# on an SDK rev bump (the vibranium repeated-date-version trap, one level above uv's cache, eng_sr2) —
+# so without pruning, a gate reuses a pre-fix SDK wheel => false verdict. Substituted host-side to keep
+# the heredoc clean (an inline ${FRESH:+...} with comments broke under dash).
+if [ -n "$FRESH" ]; then
+  FRESH_BLOCK='export UV_NO_CACHE=1; rm -rf "$HOME/.local/share/hatch/env" 2>/dev/null; echo "[fresh] uv cache bypassed + hatch env pruned"'
+else
+  FRESH_BLOCK=':'
+fi
+# Replace the placeholder line with the resolved block (| delimiter; FRESH_BLOCK has no |).
+TMP2=$(mktemp); sed "s|__FRESH_BLOCK__|$FRESH_BLOCK|" "$JOB" > "$TMP2" && mv "$TMP2" "$JOB"
 
 # -b: stage the Bedrock bearer (Mantle path) — nodes reach Converse ONLY via this, not the node role.
 # URL single-quoted (it has & and % that would otherwise break the shell). Appended host-side.

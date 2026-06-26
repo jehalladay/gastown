@@ -11,7 +11,9 @@ Do NOT reimplement the SSM/presign/Bedrock logic in Go.
 
 ## Vendored from
 - Repo: reactivecli (offload_eng crew dir)
-- Rev: `33bb5d6` (offload.sh frozen-flag contract confirmed 2026-06-26)
+- Rev: `dd34be5` (offload.sh; re-vendored 2026-06-26 after F4 co-verify — adds
+  `-f` hatch-env-prune on top of the uv-cache bypass. Flag contract unchanged.
+  pick-node/ssm-run/setup-secrets unchanged since 33bb5d6.)
 - Files: offload.sh, pick-node.sh, ssm-run.sh, setup-secrets.sh
 
 warm-pool.sh / provision-node.sh are deliberately NOT vendored — they're
