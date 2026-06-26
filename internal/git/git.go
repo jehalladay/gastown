@@ -671,6 +671,14 @@ func (g *Git) cloneInternal(url, dest string, opts cloneOptions) error {
 		return fmt.Errorf("moving clone to destination: %w", err)
 	}
 
+	// Force HTTP/1.1 for all Gas Town clones. HTTP/2 + chunked-transfer corrupts
+	// the push pack on some networks (HTTP 400 / sideband-disconnect / false
+	// "everything-up-to-date"), which stalled the whole pipeline town-wide.
+	// Set it repo-local so every later push/fetch uses it. See feature F5.
+	if err := configureHTTPVersion(dest); err != nil {
+		return err
+	}
+
 	// Post-clone configuration
 	if opts.bare {
 		// Configure refspec so worktrees can fetch and see origin/* refs.
@@ -776,6 +784,29 @@ func configureHooksPath(repoPath string) error {
 // ConfigureHooksPath sets core.hooksPath for the repo/worktree if .githooks exists.
 func (g *Git) ConfigureHooksPath() error {
 	return configureHooksPath(g.workDir)
+}
+
+// HTTPVersionConfig is the value Gas Town pins http.version to on every clone.
+// Exported so the doctor check can assert it without duplicating the literal.
+const HTTPVersionConfig = "HTTP/1.1"
+
+// configureHTTPVersion pins http.version to HTTP/1.1 (repo-local) so pushes and
+// fetches never negotiate HTTP/2, which corrupts the push pack on some networks.
+// Works for both bare and non-bare repos (git -C auto-detects the git dir).
+func configureHTTPVersion(repoPath string) error {
+	cmd := exec.Command("git", "-C", repoPath, "config", "http.version", HTTPVersionConfig)
+	util.SetDetachedProcessGroup(cmd)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("configuring http.version: %s", strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+// ConfigureHTTPVersion pins http.version to HTTP/1.1 for the repo/worktree.
+func (g *Git) ConfigureHTTPVersion() error {
+	return configureHTTPVersion(g.workDir)
 }
 
 // configureRefspec sets remote.origin.fetch to the standard refspec for bare repos.
