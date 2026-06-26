@@ -81,6 +81,51 @@ func TestVerifyMQSubmitPushedBranchRequiresRemoteBranch(t *testing.T) {
 	}
 }
 
+// TestParseBranchNameCrewBranchMisfire documents the rc-vf94 root cause: the
+// issuePattern regex mis-derives the bead from a crew branch <crew>/<topic>,
+// matching the first hyphen-token of the topic instead of the real bead id. This
+// is WHY runMqSubmit must prefer the hooked bead over info.Issue for crew branches.
+func TestParseBranchNameCrewBranchMisfire(t *testing.T) {
+	cases := []struct {
+		branch        string
+		regexDerives  string // what parseBranchName returns (the misfire)
+		realBead      string // the actual source bead (NOT derivable from the branch)
+	}{
+		{"eng_sr2/p1y1-deploy-gate", "deploy-gate", "p1y1"},
+		{"eng_sr2/sha-stamp-helper", "sha-stamp", "p1y1-or-whatever"},
+	}
+	for _, c := range cases {
+		got := parseBranchName(c.branch).Issue
+		if got != c.regexDerives {
+			t.Errorf("parseBranchName(%q).Issue = %q, want %q (documenting the misfire)", c.branch, got, c.regexDerives)
+		}
+		// The point: the regex result is NOT the real bead — so submit must not
+		// trust it. The stale-branch guard catches this when a hooked bead exists.
+		if got == c.realBead {
+			t.Errorf("parseBranchName(%q) unexpectedly recovered the real bead — misfire premise changed", c.branch)
+		}
+	}
+}
+
+// TestStaleBranchGuardCatchesCrewMisfire verifies the guard logic submit relies
+// on: a branch-derived id that disagrees with the (single) hooked bead is treated
+// as stale, so submit will substitute the hooked bead.
+func TestStaleBranchGuardCatchesCrewMisfire(t *testing.T) {
+	// Crew branch eng_sr2/p1y1-deploy-gate -> regex "deploy-gate"; hooked bead "p1y1".
+	branchIssue := parseBranchName("eng_sr2/p1y1-deploy-gate").Issue // "deploy-gate"
+	hookIssue, ambiguous := selectAssignedIssue(branchIssue, []string{"p1y1"})
+	if ambiguous {
+		t.Fatal("single assignment should not be ambiguous")
+	}
+	if !isStaleBranchIssue(branchIssue, hookIssue) {
+		t.Errorf("isStaleBranchIssue(%q, %q) = false, want true (crew misfire must be caught as stale)", branchIssue, hookIssue)
+	}
+	// A subtask branch of the hooked bead must NOT be flagged stale.
+	if isStaleBranchIssue("p1y1.2", "p1y1") {
+		t.Error("subtask p1y1.2 of hooked p1y1 should not be stale")
+	}
+}
+
 func runGitForMQSubmitTest(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
