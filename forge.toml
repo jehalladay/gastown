@@ -1,0 +1,9 @@
+[package]
+name = "gastown"
+type = "code"
+version = "0.1.0"
+language = "go"
+description = "Gastown (github.com/steveyegge/gastown)"
+
+[build]
+backend = "go"
