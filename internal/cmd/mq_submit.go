@@ -158,8 +158,16 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("cannot determine source issue from branch '%s'; use --issue to specify", branch)
 	}
 
-	// Initialize beads for looking up source issue
-	bd := beads.New(cwd)
+	// Initialize beads — follow the .beads/redirect so the MR bead lands in the
+	// rig's shared DB (e.g. rc), not a local/town DB (e.g. hq). Without the
+	// redirect the MR is invisible to the Refinery and `mq reject` can't find it
+	// (F6 bug a). Mirrors gt done's resolution.
+	resolvedBeads := beads.ResolveBeadsDir(cwd)
+	if beads.IsLocalBeadsDir(cwd, resolvedBeads) {
+		fmt.Fprintf(os.Stderr, "WARNING: beads resolved to local dir %s (no shared-beads redirect)\n", resolvedBeads)
+		fmt.Fprintf(os.Stderr, "  MR beads written here will be invisible to the Refinery — run 'gt polecat repair' to fix\n")
+	}
+	bd := beads.NewWithBeadsDir(cwd, resolvedBeads)
 
 	// Determine target branch
 	// Priority: explicit --epic > formula_vars base_branch > integration branch auto-detect > rig default.
@@ -248,6 +256,15 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 	}
 	if worker != "" {
 		description += fmt.Sprintf("\nworker: %s", worker)
+	}
+
+	// Push the branch to origin before registering the MR (F6 bug b). Previously
+	// submit only VERIFIED a pre-existing push and errored with GIT=MISSING if the
+	// caller forgot — stalling the pipeline. Push-or-hard-error here, mirroring
+	// gt done's bare/mayor fallback, then verify the tip below. Re-pushing an
+	// up-to-date branch is a no-op, so this is safe on resubmit too.
+	if pushErr := pushMQSubmitBranch(g, townRoot, rigName, branch); pushErr != nil {
+		return fmt.Errorf("pushing branch %q to origin: %w", branch, pushErr)
 	}
 
 	// Verify before either an idempotent success or a new MR registration.
@@ -366,6 +383,43 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 
 func resolveMQSubmitCommitSHA(g *git.Git, branch string) (string, error) {
 	return g.Rev(fmt.Sprintf("refs/heads/%s^{commit}", branch))
+}
+
+// pushMQSubmitBranch pushes branch to origin using an explicit refspec
+// (branch:branch) so polecat branches that track origin/main don't push to main
+// directly (bypassing the MR flow). On failure it retries from the rig's bare
+// repo and then mayor/rig, since worktree git context can be stale while the
+// commits always exist in the shared object DB. Mirrors gt done's push path.
+func pushMQSubmitBranch(g *git.Git, townRoot, rigName, branch string) error {
+	refspec := branch + ":" + branch
+	if err := g.Push("origin", refspec, false); err == nil {
+		return nil
+	} else {
+		style.PrintWarning("primary push failed: %v — trying bare repo fallback...", err)
+	}
+
+	rigPath := filepath.Join(townRoot, rigName)
+	for _, fallback := range []string{
+		filepath.Join(rigPath, ".repo.git"),
+		filepath.Join(rigPath, "mayor", "rig"),
+	} {
+		if _, statErr := os.Stat(fallback); statErr != nil {
+			continue
+		}
+		var fbGit *git.Git
+		if strings.HasSuffix(fallback, ".repo.git") {
+			fbGit = git.NewGitWithDir(fallback, "")
+		} else {
+			fbGit = git.NewGit(fallback)
+		}
+		if err := fbGit.Push("origin", refspec, false); err == nil {
+			fmt.Printf("%s Branch pushed via %s fallback\n", style.Bold.Render("✓"), filepath.Base(fallback))
+			return nil
+		} else {
+			style.PrintWarning("%s push also failed: %v", filepath.Base(fallback), err)
+		}
+	}
+	return fmt.Errorf("all push attempts failed for branch %q", branch)
 }
 
 func verifyMQSubmitPushedBranch(g *git.Git, branch, commitSHA string) error {

@@ -423,6 +423,31 @@ func TestStartIntegration(t *testing.T) {
 		assert.Error(t, err, "client cert from different CA should be rejected")
 	})
 
+	t.Run("server refuses HTTP/2 (F5: h2+chunked corrupts git push packs)", func(t *testing.T) {
+		// Offer h2 in ALPN; the server must still negotiate http/1.1 because
+		// TLSNextProto is set to an empty map. If it negotiated h2, multi-MB
+		// git pushes through /v1/git could silently corrupt.
+		h2Client := &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					Certificates: []tls.Certificate{clientCert},
+					RootCAs:      pool,
+					NextProtos:   []string{"h2", "http/1.1"},
+				},
+				ForceAttemptHTTP2: true,
+			},
+		}
+		resp, err := h2Client.Post(
+			"https://"+addr+"/v1/exec",
+			"application/json",
+			strings.NewReader(`{"argv":["echo","hi"]}`),
+		)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, "HTTP/1.1", resp.Proto, "server must not negotiate HTTP/2")
+		assert.NotEqual(t, "h2", resp.TLS.NegotiatedProtocol, "ALPN must not select h2")
+	})
+
 	t.Run("cancelling context causes server to shut down", func(t *testing.T) {
 		cancel()
 		// Allow the server goroutine to finish shutting down.
