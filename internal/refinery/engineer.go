@@ -1232,24 +1232,38 @@ func (e *Engineer) HandleMRInfoSuccess(mr *MRInfo, result ProcessResult) {
 		}
 	}
 
-	// 1. Close source issue with reference to MR.
-	// Use ForceCloseWithReason to bypass dependency checks — the source issue
-	// may have an attached molecule (wisp) whose open steps would block a
-	// normal close. This matches how gt done handles closures.
+	// 1. Close source issue with reference to MR — but ONLY if the MR carried a real code change.
+	// A RED-by-design regression PROBE (touches only test/probe dirs: qa/, evals/, tests/, test/)
+	// landing must NOT auto-close its bug bead: the probe is the GUARD, not the fix, so closing the
+	// bead makes a still-live bug read as fixed (reactivecli-vtzy — the 2nd vector that lost mr0s 3x,
+	// distinct from the ff-race AHEAD-guard). Gate is layout-agnostic: close UNLESS every changed
+	// file is under a known test/probe prefix (NOT a brittle 'src/'-only allowlist, which would
+	// false-leave-open a real code change in a non-src/-layout rig). Fails safe: if we cannot
+	// determine the changed files, treat it as a code change and close (preserves prior behaviour).
+	// The MR bead itself already closed 'merged' above (line ~1228) regardless — only the SOURCE
+	// bug bead's close is gated here.
 	if mr.SourceIssue != "" {
-		closeReason := fmt.Sprintf("Merged in %s", mr.ID)
-		if result.MergeCommit != "" {
-			closeReason = fmt.Sprintf("%s\ntarget_branch: %s\ncommit_sha: %s", closeReason, mr.Target, result.MergeCommit)
-		}
-		if err := e.beads.ForceCloseWithReason(closeReason, mr.SourceIssue); err != nil {
-			// Check if already closed (by polecat's gt done) — that's fine
-			if issue, showErr := e.beads.Show(mr.SourceIssue); showErr == nil && beads.IssueStatus(issue.Status).IsTerminal() {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Source issue already closed: %s\n", mr.SourceIssue)
-			} else {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to close source issue %s: %v\n", mr.SourceIssue, err)
-			}
+		if e.mrIsProbeOnly(mr) {
+			// Probe/test/eval-only land: leave the bug bead OPEN (fail safe) — the probe guards the
+			// bug, it does not fix it. Surfaced loudly so the land is not a silent no-op.
+			_, _ = fmt.Fprintf(e.output,
+				"[Engineer] Source issue left OPEN: %s — probe/test-only MR (no code change), bug not fixed\n",
+				mr.SourceIssue)
 		} else {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Closed source issue: %s\n", mr.SourceIssue)
+			closeReason := fmt.Sprintf("Merged in %s", mr.ID)
+			if result.MergeCommit != "" {
+				closeReason = fmt.Sprintf("%s\ntarget_branch: %s\ncommit_sha: %s", closeReason, mr.Target, result.MergeCommit)
+			}
+			if err := e.beads.ForceCloseWithReason(closeReason, mr.SourceIssue); err != nil {
+				// Check if already closed (by polecat's gt done) — that's fine
+				if issue, showErr := e.beads.Show(mr.SourceIssue); showErr == nil && beads.IssueStatus(issue.Status).IsTerminal() {
+					_, _ = fmt.Fprintf(e.output, "[Engineer] Source issue already closed: %s\n", mr.SourceIssue)
+				} else {
+					_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to close source issue %s: %v\n", mr.SourceIssue, err)
+				}
+			} else {
+				_, _ = fmt.Fprintf(e.output, "[Engineer] Closed source issue: %s\n", mr.SourceIssue)
+			}
 		}
 	}
 
@@ -1312,6 +1326,56 @@ func (e *Engineer) HandleMRInfoSuccess(mr *MRInfo, result ProcessResult) {
 
 	// 5. Log success
 	_, _ = fmt.Fprintf(e.output, "[Engineer] ✓ Merged: %s (commit: %s)\n", mr.ID, result.MergeCommit)
+}
+
+// probeOnlyPrefixes are the path prefixes that hold RED-by-design regression PROBES / tests /
+// eval scenarios — NOT product code. An MR touching ONLY these is a guard, not a fix, so its
+// source bug bead must stay OPEN on land (reactivecli-vtzy). Layout-agnostic by construction:
+// we enumerate the (small, stable) set of test/probe dirs rather than the (many, rig-specific)
+// ways product code is laid out — so a real code change in any layout (src/, lib/, pkg-rooted
+// Python, repo-root) still closes the bead. Add a prefix here if a rig grows a new probe dir.
+var probeOnlyPrefixes = []string{"qa/", "evals/", "tests/", "test/"}
+
+// mrIsProbeOnly reports whether EVERY file the MR changed lives under a test/probe prefix — i.e.
+// the MR is a regression guard with no product-code change, so landing it must NOT auto-close the
+// source bug bead. Fails SAFE: if the changed-file set cannot be determined (git error) or is
+// empty, returns false so the bead closes exactly as before (the gate never INVENTS a leave-open).
+func (e *Engineer) mrIsProbeOnly(mr *MRInfo) bool {
+	if mr.Branch == "" || mr.Target == "" {
+		return false // can't diff without both refs — fail safe to the prior close behaviour
+	}
+	files, err := e.git.DiffNameOnly(mr.Target, mr.Branch)
+	if err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Note: could not diff %s..%s for probe-only gate (%v); closing source issue as before\n", mr.Target, mr.Branch, err)
+		return false
+	}
+	return changedFilesAreProbeOnly(files)
+}
+
+// changedFilesAreProbeOnly reports whether a non-empty changed-file set is ENTIRELY test/probe
+// paths (the pure decision behind the probe-only gate, split out for table-testing without a git
+// mock). Empty input => false: no detectable change is treated as "not probe-only" so the gate
+// never manufactures a leave-open out of an unknown diff.
+func changedFilesAreProbeOnly(files []string) bool {
+	if len(files) == 0 {
+		return false
+	}
+	for _, f := range files {
+		if !isProbeOnlyPath(f) {
+			return false // a single product-code file makes this a real fix → close the bead
+		}
+	}
+	return true // every changed file is a probe/test/eval → guard-only, leave the bead open
+}
+
+// isProbeOnlyPath reports whether a repo-relative path is under a known test/probe prefix.
+func isProbeOnlyPath(path string) bool {
+	for _, prefix := range probeOnlyPrefixes {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engineer) clearAgentActiveMR(agentBeadID string) error {
