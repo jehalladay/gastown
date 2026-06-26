@@ -81,6 +81,50 @@ func TestVerifyMQSubmitPushedBranchRequiresRemoteBranch(t *testing.T) {
 	}
 }
 
+// F6 bug b: mq submit must push the branch itself, not just verify a pre-push.
+func TestPushMQSubmitBranchPushesUnpushedBranch(t *testing.T) {
+	repo := t.TempDir()
+	remote := t.TempDir()
+	runGitForMQSubmitTest(t, remote, "init", "--bare")
+
+	runGitForMQSubmitTest(t, repo, "init")
+	runGitForMQSubmitTest(t, repo, "config", "user.email", "test@example.com")
+	runGitForMQSubmitTest(t, repo, "config", "user.name", "Test User")
+	runGitForMQSubmitTest(t, repo, "remote", "add", "origin", remote)
+
+	writeMQSubmitTestFile(t, repo, "file.txt", "main\n")
+	runGitForMQSubmitTest(t, repo, "add", "file.txt")
+	runGitForMQSubmitTest(t, repo, "commit", "-m", "main")
+	runGitForMQSubmitTest(t, repo, "branch", "-M", "main")
+	runGitForMQSubmitTest(t, repo, "push", "-u", "origin", "main")
+
+	runGitForMQSubmitTest(t, repo, "checkout", "-b", "feature/pr-target")
+	writeMQSubmitTestFile(t, repo, "file.txt", "feature\n")
+	runGitForMQSubmitTest(t, repo, "commit", "-am", "feature")
+	featureSHA := runGitForMQSubmitTest(t, repo, "rev-parse", "HEAD")
+
+	g := gitpkg.NewGit(repo)
+
+	// Branch is NOT on origin yet — verify should fail before push.
+	if err := verifyMQSubmitPushedBranch(g, "feature/pr-target", featureSHA); err == nil {
+		t.Fatal("precondition: branch should not be on origin yet")
+	}
+
+	// pushMQSubmitBranch (no rig bare/mayor fallback dirs needed — primary push works).
+	if err := pushMQSubmitBranch(g, t.TempDir(), "norig", "feature/pr-target"); err != nil {
+		t.Fatalf("pushMQSubmitBranch: %v", err)
+	}
+
+	// Now the branch tip must be on origin.
+	if err := verifyMQSubmitPushedBranch(g, "feature/pr-target", featureSHA); err != nil {
+		t.Fatalf("verify after pushMQSubmitBranch: %v", err)
+	}
+	gotRemote := runGitForMQSubmitTest(t, remote, "rev-parse", "refs/heads/feature/pr-target")
+	if gotRemote != featureSHA {
+		t.Fatalf("origin branch tip = %s, want %s", gotRemote, featureSHA)
+	}
+}
+
 func runGitForMQSubmitTest(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
