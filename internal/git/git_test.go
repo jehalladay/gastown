@@ -305,7 +305,15 @@ func TestCountAhead(t *testing.T) {
 		}
 	}
 
-	// main has the initial commit; create a feature branch off it.
+	// Resolve the default branch name rather than assuming "main" — initTestRepo
+	// relies on git's init.defaultBranch, which is "master" on older/unset setups.
+	base, err := g.run("rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		t.Fatalf("resolve default branch: %v", err)
+	}
+	base = strings.TrimSpace(base)
+
+	// base has the initial commit; create a feature branch off it.
 	for _, args := range [][]string{{"branch", "feature"}, {"checkout", "feature"}} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
@@ -315,7 +323,7 @@ func TestCountAhead(t *testing.T) {
 	}
 
 	// 0 commits ahead — the phantom-close case (rebased to empty).
-	n, err := g.CountAhead("main", "feature")
+	n, err := g.CountAhead(base, "feature")
 	if err != nil {
 		t.Fatalf("CountAhead (0): %v", err)
 	}
@@ -326,12 +334,22 @@ func TestCountAhead(t *testing.T) {
 	// 2 commits ahead.
 	commit("a.txt", "a")
 	commit("b.txt", "b")
-	n, err = g.CountAhead("main", "feature")
+	n, err = g.CountAhead(base, "feature")
 	if err != nil {
 		t.Fatalf("CountAhead (2): %v", err)
 	}
 	if n != 2 {
 		t.Fatalf("expected 2 commits ahead, got %d", n)
+	}
+
+	// Counting in the other direction (base..feature reversed) is 0 — feature's
+	// commits are not behind base. Guards against an args-order regression.
+	n, err = g.CountAhead("feature", base)
+	if err != nil {
+		t.Fatalf("CountAhead (reverse): %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("expected base to be 0 commits ahead of feature, got %d", n)
 	}
 }
 

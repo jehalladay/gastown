@@ -6,4 +6,13 @@ language = "go"
 description = "Gastown (github.com/steveyegge/gastown)"
 
 [build]
-backend = "go"
+backend = "python"
+
+# Drive the repo's real Makefile through Forge. The Makefile handles the
+# macOS ICU CGo flags (go-icu-regex needs unicode/regex.h) that a bare
+# `go build` misses. SKIP_UPDATE_CHECK lets a local (possibly-ahead) tree
+# install without an upstream sync.
+[build.commands]
+build = "make build"
+test = "make test"
+release = "SKIP_UPDATE_CHECK=1 make install"

@@ -498,6 +498,10 @@ type ProcessResult struct {
 }
 
 // doMerge performs the actual git merge operation.
+//
+// Note: the live refinery runs the on-disk formula (mol-refinery-patrol), not this
+// Go engine path. The no-op merge guard below (Step 4.6) is defense-in-depth for the
+// engine path; the primary phantom-close fix lives in the formula's merge-push step.
 func (e *Engineer) doMerge(ctx context.Context, branch, target, sourceIssue string, skipGates ...bool) ProcessResult {
 	// GH#2778: Check no_merge flag on source issue before merging. The polecat
 	// normally skips MR creation when no_merge is set, but if an MR is created
@@ -628,10 +632,15 @@ func (e *Engineer) doMerge(ctx context.Context, branch, target, sourceIssue stri
 	}
 
 	// Step 4.6: No-op merge guard (phantom-close defense-in-depth).
-	// If the source branch is not ahead of the target — e.g. it rebased to empty
-	// because an equivalent patch already landed — a squash merge would stage
-	// nothing and "succeed" without anything reaching the target. Refuse it so the
-	// caller does not report a phantom merge.
+	// If the source branch is not ahead of the target — e.g. an equivalent patch
+	// already landed by SHA — counting against origin/<target> catches it before we
+	// squash. (A patch that landed under a *different* SHA is backstopped separately:
+	// MergeSquash's `git commit` refuses an empty commit, surfacing as a merge error.)
+	// Fetch first so origin/<target> is current — the Pull above is best-effort and
+	// its error is intentionally ignored, which could otherwise leave a stale ref.
+	if err := e.git.Fetch("origin"); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: fetch origin before no-op guard: %v (continuing)\n", err)
+	}
 	ahead, aheadErr := e.git.CountAhead("origin/"+target, branch)
 	if aheadErr != nil {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not count commits ahead of origin/%s: %v (continuing)\n", target, aheadErr)
@@ -1350,6 +1359,22 @@ func (e *Engineer) HandleMRInfoFailure(mr *MRInfo, result ProcessResult) {
 		mayorCmd.Dir = e.workDir
 		if err := mayorCmd.Run(); err != nil {
 			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to nudge mayor about missing branch: %v\n", err)
+		}
+		return
+	}
+
+	// No-op merge refused: the branch was not ahead of target (rebased to empty or
+	// already landed). Escalate to mayor for possible lost work — never silently drop,
+	// and never classify as a build/test failure the polecat should "fix and resubmit".
+	if result.NoOp {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] MR %s: no-op merge refused (branch %s not ahead of target) — escalating to mayor (possible already-landed/lost work)\n", mr.ID, mr.Branch)
+		mayorMsg := fmt.Sprintf("MERGE_NOOP: MR %s branch=%s issue=%s worker=%s — branch not ahead of target (rebased to empty?); verify work landed or re-dispatch",
+			mr.ID, mr.Branch, mr.SourceIssue, mr.Worker)
+		mayorCmd := exec.Command("gt", "nudge", "mayor/", mayorMsg)
+		util.SetDetachedProcessGroup(mayorCmd)
+		mayorCmd.Dir = e.workDir
+		if err := mayorCmd.Run(); err != nil {
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to nudge mayor about no-op merge: %v\n", err)
 		}
 		return
 	}

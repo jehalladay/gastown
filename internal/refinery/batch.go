@@ -127,6 +127,19 @@ func (e *Engineer) BuildRebaseStack(ctx context.Context, batch []*MRInfo, target
 			continue
 		}
 
+		// No-op guard (phantom-close defense): if this branch is not ahead of the
+		// target it rebased to empty / already landed. Squashing it would stage nothing
+		// (MergeSquash's commit would then error mid-stack). Skip it and escalate for
+		// possible lost work instead of letting it ride the batch. Count against the
+		// target tip in the working tree (the stack is built on top of target).
+		ahead, aheadErr := e.git.CountAhead(target, mr.Branch)
+		if aheadErr == nil && ahead == 0 {
+			_, _ = fmt.Fprintf(e.output, "[Batch] MR %s: branch %s is 0 commits ahead of %s — refusing no-op merge, escalating\n", mr.ID, mr.Branch, target)
+			e.HandleMRInfoFailure(mr, ProcessResult{NoOp: true})
+			conflicts = append(conflicts, mr)
+			continue
+		}
+
 		// Check for conflicts before merging
 		conflictFiles, conflictErr := e.git.CheckConflicts(mr.Branch, target)
 		if conflictErr != nil || len(conflictFiles) > 0 {
@@ -312,6 +325,13 @@ func (e *Engineer) processSingleMR(ctx context.Context, mr *MRInfo, target strin
 		// PR awaiting human approval — leave in queue for retry on next poll.
 		_, _ = fmt.Fprintf(e.output, "[Batch] MR %s: PR awaiting approval, will retry\n", mr.ID)
 		e.HandleMRInfoFailure(mr, processResult)
+	} else if processResult.NoOp {
+		// Branch is not ahead of target (rebased to empty / already landed). The merge
+		// was refused to avoid a phantom-close. Escalate to mayor for possible lost work
+		// rather than dropping the signal — treat as a conflict-class outcome so the MR
+		// leaves the ready queue.
+		e.HandleMRInfoFailure(mr, processResult)
+		result.Conflicts = []*MRInfo{mr}
 	} else {
 		result.Error = fmt.Errorf("merge failed: %s", processResult.Error)
 	}
