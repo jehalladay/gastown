@@ -81,28 +81,36 @@ func TestVerifyMQSubmitPushedBranchRequiresRemoteBranch(t *testing.T) {
 	}
 }
 
-// TestParseBranchNameCrewBranchMisfire documents the rc-vf94 root cause: the
-// issuePattern regex mis-derives the bead from a crew branch <crew>/<topic>,
-// matching the first hyphen-token of the topic instead of the real bead id. This
-// is WHY runMqSubmit must prefer the hooked bead over info.Issue for crew branches.
+// TestParseBranchNameCrewBranchMisfire documents the rc-vf94 root cause with real
+// crew-branch submits from this session (eng_sr2). The issuePattern regex grabs the
+// first [a-z]+-[a-z0-9]+ token, which mis-derives the bead in TWO ways:
+//   (1) bare-token bead: bead is p1y1/tjya (no hyphen), regex skips it for the next
+//       hyphenated topic token (deploy-gate) — a WRONG, unrelated id.
+//   (2) hyphenated bead: bead is tjya-sdk-revpin, regex stops after two segments
+//       (tjya-sdk) — a TRUNCATED id.
+// Either way the branch-derived id is unreliable, which is WHY runMqSubmit must
+// prefer the hooked bead over info.Issue. realBead is what it SHOULD resolve to
+// (only recoverable from the hook, never the branch).
 func TestParseBranchNameCrewBranchMisfire(t *testing.T) {
 	cases := []struct {
-		branch        string
-		regexDerives  string // what parseBranchName returns (the misfire)
-		realBead      string // the actual source bead (NOT derivable from the branch)
+		branch       string
+		regexDerives string // what parseBranchName actually returns (the misfire)
+		realBead     string // the true source bead — NOT derivable from the branch
+		mode         string
 	}{
-		{"eng_sr2/p1y1-deploy-gate", "deploy-gate", "p1y1"},
-		{"eng_sr2/sha-stamp-helper", "sha-stamp", "p1y1-or-whatever"},
+		{"eng_sr2/p1y1-deploy-gate", "deploy-gate", "p1y1", "bare-token bead skipped for topic"},
+		{"eng_sr2/tjya-sdk-revpin", "tjya-sdk", "tjya", "hyphenated topic over bare bead"},
+		{"eng_sr2/sha-stamp-helper", "sha-stamp", "", "false issue from a topic (no bead in branch)"},
+		{"eng_sr2/uop-rc1-rebase-check", "uop-rc1", "uop", "truncated/wrong-ish id"},
 	}
 	for _, c := range cases {
 		got := parseBranchName(c.branch).Issue
 		if got != c.regexDerives {
-			t.Errorf("parseBranchName(%q).Issue = %q, want %q (documenting the misfire)", c.branch, got, c.regexDerives)
+			t.Errorf("parseBranchName(%q).Issue = %q, want %q (%s)", c.branch, got, c.regexDerives, c.mode)
 		}
-		// The point: the regex result is NOT the real bead — so submit must not
-		// trust it. The stale-branch guard catches this when a hooked bead exists.
-		if got == c.realBead {
-			t.Errorf("parseBranchName(%q) unexpectedly recovered the real bead — misfire premise changed", c.branch)
+		// The regex result is NOT the real bead — submit must not trust it.
+		if c.realBead != "" && got == c.realBead {
+			t.Errorf("parseBranchName(%q) unexpectedly recovered real bead %q — misfire premise changed", c.branch, c.realBead)
 		}
 	}
 }
