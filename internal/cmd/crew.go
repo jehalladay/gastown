@@ -24,6 +24,7 @@ var (
 	crewDebug         bool
 	crewReset         bool
 	crewResume        string
+	crewRemoteNode    string
 )
 
 var crewCmd = &cobra.Command{
@@ -402,6 +403,7 @@ func init() {
 	crewStartCmd.Flags().StringVar(&crewAgentOverride, "agent", "", "Agent alias to run crew worker with (overrides rig/town default)")
 	crewStartCmd.Flags().StringVar(&crewResume, "resume", "", "Resume a previous session (optionally specify session ID)")
 	crewStartCmd.Flags().Lookup("resume").NoOptDefVal = "last"
+	crewStartCmd.Flags().StringVar(&crewRemoteNode, "remote", "", "Spawn the agent loop on a cluster node (instance ID) instead of locally (F2: off-box memory relief)")
 
 	crewStopCmd.Flags().StringVar(&crewRig, "rig", "", "Rig to use (filter when using --all)")
 	crewStopCmd.Flags().BoolVar(&crewAll, "all", false, "Stop all running crew sessions")

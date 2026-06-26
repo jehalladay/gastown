@@ -292,6 +292,16 @@ func runCrewStart(cmd *cobra.Command, args []string) error {
 	// Update rigName in case it was inferred
 	rigName = r.Name
 
+	// F2: --remote spawns the agent loop on a cluster node (off-box memory
+	// relief) instead of a local tmux session. Targets exactly one crew member
+	// (a remote spawn is a deliberate per-agent placement, not a fan-out).
+	if crewRemoteNode != "" {
+		if len(crewNames) != 1 {
+			return fmt.Errorf("--remote spawns one crew member at a time; got %d (specify a single crew name)", len(crewNames))
+		}
+		return runCrewStartRemote(crewMgr, r, crewNames[0], crewRemoteNode)
+	}
+
 	// If --all flag OR no crew names specified, get all crew members
 	if crewAll || len(crewNames) == 0 {
 		workers, err := crewMgr.List()
