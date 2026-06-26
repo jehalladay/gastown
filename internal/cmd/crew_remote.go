@@ -18,7 +18,19 @@ import (
 // through gt-proxy (that's the exec/acp proxy, unrelated to the Dolt data plane).
 const (
 	remoteDoltHost    = "127.0.0.1"
-	remoteDoltFwdPort = "13307" // fixed convention so the spawn env is static
+	remoteDoltFwdPort = "13307" // SETTLED w/ eng_sr2 + offload_ops: node-side fwd port,
+	// distinct from any Dolt port. A node may run its OWN Dolt on 3307 (offload nodes
+	// can; the cluster hub does), so GT_DOLT_PORT=3307 would silently hit the node's
+	// local Dolt instead of the tunneled host. 13307 guarantees -> the -R forward -> host 3307.
+
+	// Node launch contract (confirmed live by offload_ops --agent on the warm nodes):
+	// login user is ubuntu (no ec2-user; root SSH forced-command-blocked); the agent
+	// toolchain (gt linux/amd64 + claude + bd) and the crew HOME/clone are staged under
+	// /opt/gastown, runnable by root via SSM. The agent loop is launched with
+	// `systemd-run --scope` (verified to survive the SSM run-command exit — the SSM
+	// timeout does not bound the agent); nohup/setsid/tmux also present as fallbacks.
+	remoteNodeUser = "ubuntu"
+	remoteNodeHome = "/opt/gastown"
 )
 
 // runCrewStartRemote spawns a crew member's agent loop on a cluster node instead
@@ -36,18 +48,25 @@ const (
 //     reach the host Dolt; and
 //  2. launches the agent loop persistently (long-lived process on the node).
 //
-// Tunnel contract (Q1/Q2/Q4): LOCKED — see remoteDoltHost/remoteDoltFwdPort and
-// remoteAgentEnv below. Tunnel-open + keepalive (Q3) is eng_sr2's host-side piece,
-// wired after this scaffold.
+// BOTH contracts are now LOCKED + proven live:
+//   - TUNNEL (eng_sr2): host opens ssh -R 13307:127.0.0.1:3307 over SSM
+//     (open-remote-tunnel.sh, 13307-canonical, TUNNEL_SSH_USER=ubuntu); agent
+//     exports GT_DOLT_HOST=127.0.0.1 GT_DOLT_PORT=13307. bd reached host Dolt
+//     through it live.
+//   - NODE (offload_ops): provision-node.sh --agent stages gt(linux/amd64 from
+//     bin/gt-linux-amd64) + claude + bd under /opt/gastown as user ubuntu; the
+//     agent loop launches via `systemd-run --scope` (survives the SSM exit;
+//     the SSM timeout does not bound it). Verified: all 3 binaries + tunnel +
+//     keepalive + key-auth.
 //
-// Still pending — the NODE-LAUNCH contract (offload_ops): the warm node's instance
-// IDs, that the agent toolchain (claude/RC + gt + bd + uv + creds) is staged there,
-// and HOW a long-lived process is kept alive past the SSM run-command timeout
-// (nohup/systemd-run/tmux on the node). The SSM dispatch primitive itself is the
-// vendored offload.sh/ssm-run (F4); remote-spawn = "launch a long-lived agent" vs
-// offload's "run one job + exit" — same dispatch, different lifecycle. Until that
-// lands, this returns a clear not-yet-wired error rather than guessing the keepalive
-// mechanism. The tunnel env (the eng_sr2 half) is now concrete.
+// The orchestration BODY (open tunnel -> SSM systemd-run the agent with the
+// computed env/identity) is wired jointly in the live e2e with eng_sr2 (tunnel
+// script) + offload_ops (--agent + send-command), since it invokes their proven
+// scripts — gt computes the env/command/identity (below) and drives them. That
+// e2e is currently gated on ONE host-side, pre-existing, NON-gt-source issue: the
+// bd schema skew (town reactivecli DB = v52; the bd binary = v49, which fails on
+// the HOST's own bd too). A v52-matching bd build unblocks the live write; the
+// spawn/tunnel/toolchain are all proven. Routed the bd-version owner question up.
 func runCrewStartRemote(crewMgr *crew.Manager, r *rig.Rig, name, node string) error {
 	// Resolve (or create) the worker so a remote spawn has the same identity a
 	// local one would — session name, rig, clone metadata.
@@ -58,16 +77,17 @@ func runCrewStartRemote(crewMgr *crew.Manager, r *rig.Rig, name, node string) er
 	sessionName := crewMgr.SessionName(name)
 	doltEnv := remoteAgentDoltEnv()
 
-	// ponytail: the agent-launch body is gated on offload_ops' node-launch contract
-	// (toolchain staging + long-lived-process keepalive). The tunnel env (eng_sr2)
-	// is locked; wiring the launch now would hardcode a guessed keepalive interface.
-	// Seam fills the instant offload_ops' node contract lands.
+	// ponytail: the orchestration body is wired in the joint live-e2e (it drives
+	// eng_sr2's + offload_ops' proven scripts); soloing it would hardcode their CLIs.
+	// Contracts locked + binary published; the live proof is gated only on the
+	// host-side bd v52 parity. Seam reports the locked contract + the real gate.
 	return fmt.Errorf(
-		"gt crew start --remote: scaffold ready for %s/%s (session %s) on node %s — "+
-			"tunnel env locked (%s=%s %s=%s, via host-initiated ssh -R, eng_sr2); "+
-			"pending offload_ops' node-launch contract (toolchain staging + long-lived keepalive) "+
-			"— coordinating on channel:offload-persistence",
+		"gt crew start --remote: contract-complete for %s/%s (session %s) on node %s "+
+			"[user=%s home=%s, agent env %s=%s %s=%s via host-initiated ssh -R + systemd-run] — "+
+			"live e2e gated on bd v52 schema parity (host-side, pre-existing, not gt-source); "+
+			"orchestration body wired in the joint e2e once bd parity lands",
 		r.Name, worker.Name, sessionName, node,
+		remoteNodeUser, remoteNodeHome,
 		"GT_DOLT_HOST", doltEnv["GT_DOLT_HOST"], "GT_DOLT_PORT", doltEnv["GT_DOLT_PORT"])
 }
 
