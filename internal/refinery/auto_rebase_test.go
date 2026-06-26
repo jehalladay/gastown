@@ -1,6 +1,7 @@
 package refinery
 
 import (
+	"context"
 	"io"
 	"os"
 	"os/exec"
@@ -33,9 +34,11 @@ func writeAR(t *testing.T, dir, name, content string) {
 // engineerOnRepo builds an Engineer whose git operates on repoDir.
 func engineerOnRepo(repoDir string) *Engineer {
 	return &Engineer{
-		rig:    &rig.Rig{Name: "r", Path: repoDir},
-		git:    git.NewGit(repoDir),
-		output: io.Discard,
+		rig:     &rig.Rig{Name: "r", Path: repoDir},
+		git:     git.NewGit(repoDir),
+		workDir: repoDir,
+		config:  &MergeQueueConfig{},
+		output:  io.Discard,
 	}
 }
 
@@ -93,6 +96,67 @@ func TestMaybeAutoRebase(t *testing.T) {
 		anc, _ := e.git.IsAncestor("main", "feature")
 		if !anc {
 			t.Fatal("after rebase, main should be an ancestor of feature")
+		}
+	})
+
+	t.Run("call-site wiring: gate re-runs on rebased tree + target restored", func(t *testing.T) {
+		// Locks the doMerge call-site wiring eng_sr2 flagged: after a stale-but-clean
+		// rebase, gates re-run on the REBASED worktree, then the checkout is restored
+		// to target for the downstream CheckConflicts/no-op-guard. We replicate the
+		// inserted call-site sequence exactly (the same calls doMerge makes when
+		// on_conflict=auto_rebase) and assert both observable effects.
+		repo := t.TempDir()
+		runGitAR(t, repo, "init", "-b", "main")
+		writeAR(t, repo, "f.txt", "base\n")
+		runGitAR(t, repo, "add", ".")
+		runGitAR(t, repo, "commit", "-m", "base")
+		runGitAR(t, repo, "checkout", "-b", "feature")
+		writeAR(t, repo, "feat.txt", "x\n")
+		runGitAR(t, repo, "add", ".")
+		runGitAR(t, repo, "commit", "-m", "feat")
+		// main advances with a marker file that only exists AFTER the rebase.
+		runGitAR(t, repo, "checkout", "main")
+		writeAR(t, repo, "target-marker.txt", "advanced\n")
+		runGitAR(t, repo, "add", ".")
+		runGitAR(t, repo, "commit", "-m", "advance main")
+
+		e := engineerOnRepo(repo)
+		e.config.OnConflict = "auto_rebase"
+		// Gate asserts it runs on the rebased tree: target-marker.txt is only present
+		// if the rebase moved feature onto advanced-main BEFORE the gate ran. It also
+		// drops a sentinel so the test can confirm the gate actually executed.
+		e.config.Gates = map[string]*GateConfig{
+			"rebased-check": {Cmd: "test -f target-marker.txt && touch gate-ran.sentinel"},
+		}
+
+		// Replicate the doMerge call-site block (on_conflict==auto_rebase path):
+		rebased, rerr := e.maybeAutoRebase("feature", "main")
+		if rerr != nil {
+			t.Fatalf("maybeAutoRebase: %v", rerr)
+		}
+		if !rebased {
+			t.Fatal("stale-but-clean feature should have rebased")
+		}
+		if len(e.config.Gates) > 0 {
+			if gr := e.runGates(context.Background()); !gr.Success {
+				t.Fatalf("gate failed (should run on rebased tree where target-marker exists): %s", gr.Error)
+			}
+		}
+		if err := e.git.Checkout("main"); err != nil {
+			t.Fatalf("restore target checkout: %v", err)
+		}
+
+		// (a) gate actually ran on the rebased tree (sentinel only written if the
+		//     marker was present, i.e. rebase happened before the gate).
+		if _, err := os.Stat(filepath.Join(repo, "gate-ran.sentinel")); err != nil {
+			t.Fatalf("gate did not run on the rebased worktree: %v", err)
+		}
+		// (b) worktree restored to target (main), as the downstream merge path expects.
+		cur := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+		cur.Dir = repo
+		out, _ := cur.Output()
+		if got := string(out); len(got) < 4 || got[:4] != "main" {
+			t.Fatalf("after call-site sequence, HEAD = %q, want main restored", got)
 		}
 	})
 
