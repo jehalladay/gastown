@@ -135,7 +135,20 @@ func runCrewStartRemote(crewMgr *crew.Manager, r *rig.Rig, name, node string) er
 	// 2. Launch the agent loop on the node via SSM (systemd-run --scope, survives
 	//    the send-command exit). The crew clone is at /opt/gastown/<crew> (staged by
 	//    provision --agent --crew); run the scope from there.
-	launch := fmt.Sprintf("cd %s/%s && %s\n",
+	//
+	//    GUARD (spawn-critical): assert the node's bd writes the v52 schema BEFORE
+	//    launching. A stale v49 bd HALF-WRITES against the v52 town DB (the exact
+	//    corruption we're fixing — it half-wrote reactivecli-9ncn during the dogfood
+	//    when --agent skipped replacing a pre-existing v49 bd). Fail loud here rather
+	//    than let the agent's first bd corrupt a bead. offload_ops' --agent adds a
+	//    node-side version-check too; this is gt-side defense-in-depth.
+	launch := fmt.Sprintf(
+		"set -e\n"+
+			"BDV=$(bd --version 2>/dev/null || true)\n"+
+			"echo \"[remote-spawn] node bd: $BDV\"\n"+
+			"bd migrate status 2>/dev/null | grep -q 'v52\\|0052' || { "+
+			"echo '[remote-spawn] FATAL: node bd is not v52-schema-capable (stale v49 would half-write the v52 town DB) — re-provision with --agent v52 guard before spawning'; exit 75; }\n"+
+			"cd %s/%s && %s\n",
 		remoteNodeHome, worker.Name, shellJoin(plan.SystemdRun))
 	fmt.Printf("→ Launching agent loop on %s (session %s)...\n", node, sessionName)
 	out, err := offload.SSMRun(scriptDir, node, launch, "120")
