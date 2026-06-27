@@ -81,3 +81,45 @@ func TestTunnelKeyEnv(t *testing.T) {
 		}
 	})
 }
+
+// TestBuildRemoteSpawnPlan locks the spawn-command assembly against offload_ops'
+// verified shapes: provision --agent, tunnel on the fwd port, and the systemd-run
+// --scope line carrying the agent env as --setenv flags + the startup command.
+func TestBuildRemoteSpawnPlan(t *testing.T) {
+	env := map[string]string{
+		"GT_DOLT_HOST": "127.0.0.1",
+		"GT_DOLT_PORT": "13307",
+		"GT_RIG":       "reactivecli",
+	}
+	plan := buildRemoteSpawnPlan("i-0abc", "max", "/tmp/scripts", env, "claude --foo beacon", "rc-crew-max")
+
+	// provision-node.sh --agent <node>
+	if got := strings.Join(plan.Provision, " "); got != "/tmp/scripts/provision-node.sh --agent i-0abc" {
+		t.Errorf("Provision = %q", got)
+	}
+	// open-remote-tunnel.sh <node> 13307
+	if got := strings.Join(plan.Tunnel, " "); got != "/tmp/scripts/open-remote-tunnel.sh i-0abc 13307" {
+		t.Errorf("Tunnel = %q", got)
+	}
+	// systemd-run --scope with a stable unit, per-var --setenv, sh -lc <startup>.
+	sr := strings.Join(plan.SystemdRun, " ")
+	for _, want := range []string{
+		"sudo systemd-run --scope --unit=gt-crew-max-rc-crew-max",
+		"--setenv=GT_DOLT_HOST=127.0.0.1",
+		"--setenv=GT_DOLT_PORT=13307",
+		"--setenv=GT_RIG=reactivecli",
+		"sh -lc claude --foo beacon",
+	} {
+		if !strings.Contains(sr, want) {
+			t.Errorf("SystemdRun missing %q in: %s", want, sr)
+		}
+	}
+	// HOME defaulted when env omits it (node toolchain root).
+	if !strings.Contains(sr, "--setenv=HOME="+remoteNodeHome) {
+		t.Errorf("SystemdRun should default HOME=%s when env omits it: %s", remoteNodeHome, sr)
+	}
+	// The startup command must be the LAST arg (after sh -lc), not split.
+	if plan.SystemdRun[len(plan.SystemdRun)-1] != "claude --foo beacon" {
+		t.Errorf("startup command not the final arg: %v", plan.SystemdRun)
+	}
+}
