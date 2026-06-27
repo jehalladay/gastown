@@ -11,6 +11,13 @@ import (
 	"github.com/steveyegge/gastown/internal/util"
 )
 
+// forgeWorkspaceGtSource is the known forge-workspace location of the gt source
+// tree. The source moved here and none of GetRepoRoot's discovery paths covered
+// it, which silently killed the auto-rebuild loop (hq-jpij.11). Checked as a
+// fallback; prefer the GT_SOURCE_REPO env override, which is robust to the path
+// moving again.
+const forgeWorkspaceGtSource = "/Volumes/workplace/GasTown/src/gastown"
+
 // These variables are set at build time via ldflags in cmd package.
 // We provide fallback methods to read from build info.
 var (
@@ -301,6 +308,20 @@ func singleBranchRef(repoDir, pattern string) (buildBranchRef, bool) {
 // Crew rigs also contain cmd/gt/main.go but have different HEADs,
 // so we prefer the gastown repo over CWD-based git toplevel detection.
 func GetRepoRoot() (string, error) {
+	// GT_SOURCE_REPO is an explicit override (highest precedence) for the gt
+	// source repo location. The auto-rebuild loop was silently dead because the
+	// source moved to a forge workspace (/Volumes/workplace/GasTown/src/gastown)
+	// that none of the discovery paths below cover, so GetRepoRoot returned
+	// "cannot locate gt source repository", `gt stale` reported not-stale, and
+	// rebuild-gt never fired (hq-jpij.11). An env override is robust to the path
+	// moving again. Honor it first; fall back to discovery if it doesn't point
+	// at a real gt source tree.
+	if srcRepo := os.Getenv("GT_SOURCE_REPO"); srcRepo != "" {
+		if hasGtSource(srcRepo) {
+			return srcRepo, nil
+		}
+	}
+
 	// Check if GT_ROOT environment variable is set (agents always have this)
 	if gtRoot := os.Getenv("GT_ROOT"); gtRoot != "" {
 		candidates := []string{
@@ -330,6 +351,14 @@ func GetRepoRoot() (string, error) {
 				return candidate, nil
 			}
 		}
+	}
+
+	// Known forge-workspace location (the source moved here; discovery above
+	// doesn't cover it). Checked after HOME paths so a local dev checkout still
+	// wins, but before giving up. Prefer setting GT_SOURCE_REPO over relying on
+	// this literal — the forge path is environment-specific.
+	if hasGtSource(forgeWorkspaceGtSource) {
+		return forgeWorkspaceGtSource, nil
 	}
 
 	// Fall back to current directory's git repo (may be a crew rig)
