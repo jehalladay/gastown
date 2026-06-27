@@ -166,11 +166,21 @@ func runCrewStartRemote(crewMgr *crew.Manager, r *rig.Rig, name, node string) er
 			// DB so it can't gate here; the commit is the reliable binary-identity check.)
 			"echo \"$BDV\" | grep -q '%s' || { "+
 			"echo '[remote-spawn] FATAL: node bd is not the v52 build (commit %s) — a stale v49 bd would half-write the v52 town DB; re-provision with --agent v52 guard'; exit 75; }\n"+
-			// Launch the persistent agent in a detached tmux session (-c sets the
-			// cwd; survives the SSM exit; gives claude a PTY so it stays a loop).
+			// Launch the persistent agent in a detached tmux session (bare interactive
+			// claude — -c sets cwd; survives the SSM exit; PTY keeps it a loop).
 			"%s\n"+
-			"tmux has-session -t %s 2>/dev/null && echo '[remote-spawn] tmux session live: %s' || { echo '[remote-spawn] FATAL: agent tmux session did not start'; exit 76; }\n",
-		remoteNodePATH, bdV52Commit, bdV52Commit, shellJoin(plan.Launch), sessionName, sessionName)
+			"tmux has-session -t %s 2>/dev/null || { echo '[remote-spawn] FATAL: agent tmux session did not start'; exit 76; }\n"+
+			// Let claude's REPL come up, then type the startup beacon (the "start"
+			// nudge) into the live pane — mirrors local crew (interactive claude +
+			// beacon sent via send-keys). claude with a prompt ARG would one-shot+exit.
+			"sleep 8\n"+
+			"tmux send-keys -t %s -l %s\n"+
+			"tmux send-keys -t %s Enter\n"+
+			"echo '[remote-spawn] tmux session live + beacon sent: %s'\n",
+		remoteNodePATH, bdV52Commit, bdV52Commit,
+		shellJoin(plan.Launch), sessionName,
+		sessionName, shellQuote(remoteAgentBeacon(r.Name, worker.Name)),
+		sessionName, sessionName)
 	fmt.Printf("→ Launching persistent agent (tmux) on %s (session %s)...\n", node, sessionName)
 	out, err := offload.SSMRun(scriptDir, node, launch, "120")
 	if err != nil {
@@ -261,14 +271,23 @@ func remoteAgentEnv(rigName, crewName, rigPath, sessionName string) map[string]s
 // env prefix. --dangerously-skip-permissions matches a local crew start; settings/
 // hooks resolve from the node's own crew clone cwd.
 func remoteAgentStartupCommand(rigName, crewName, rigPath, sessionName string) (string, error) {
-	beacon := session.FormatStartupBeacon(session.BeaconConfig{
+	// bare `claude` (PATH-resolved on the node), skip-permissions like local crew —
+	// but NO prompt arg: claude with a prompt arg runs it ONE-SHOT and exits (dogfood
+	// bug #5). The persistent REPL needs claude started bare; the beacon is sent via
+	// `tmux send-keys` AFTER it's up (mirrors local crew: interactive claude + the
+	// beacon typed in). Probe-verified: bare claude stays alive in a node tmux pane.
+	return "claude --dangerously-skip-permissions", nil
+}
+
+// remoteAgentBeacon is the startup beacon typed into the live claude REPL via
+// tmux send-keys (the predecessor-discovery / "start" nudge), mirroring how local
+// crew start seeds the interactive session.
+func remoteAgentBeacon(rigName, crewName string) string {
+	return session.FormatStartupBeacon(session.BeaconConfig{
 		Recipient: session.BeaconRecipient("crew", crewName, rigName),
 		Sender:    "human",
 		Topic:     "start",
 	})
-	// bare `claude` (PATH-resolved on the node), skip-permissions like local crew,
-	// beacon as the startup prompt. shellQuote the beacon (it has spaces/brackets).
-	return "claude --dangerously-skip-permissions " + shellQuote(beacon), nil
 }
 
 // remoteSpawnPlan is the concrete, reviewable set of commands gt drives to spawn a
