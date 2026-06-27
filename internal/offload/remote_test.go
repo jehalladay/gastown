@@ -7,10 +7,12 @@ import (
 	"testing"
 )
 
-// TestExtractScripts verifies the embedded remote-spawn suite extracts intact,
-// executable, and parses (bash -n) — so a vendored script that won't parse fails
-// the build's tests, not a live spawn on a node.
-func TestExtractScripts(t *testing.T) {
+// TestExtractScriptsRemote verifies the embedded remote-spawn suite extracts
+// intact, executable, and parses (bash -n) — so a vendored script that won't
+// parse fails the build's tests, not a live spawn on a node. (Named distinctly
+// from offload_test.go's TestExtractScripts, which covers the private
+// extractScripts + the offload-dispatch script set in this same package.)
+func TestExtractScriptsRemote(t *testing.T) {
 	dir, err := ExtractScripts()
 	if err != nil {
 		t.Fatalf("ExtractScripts: %v", err)

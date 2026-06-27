@@ -5,7 +5,6 @@
 package offload
 
 import (
-	"embed"
 	"fmt"
 	"io/fs"
 	"os"
@@ -13,8 +12,10 @@ import (
 	"path/filepath"
 )
 
-//go:embed scripts/*.sh
-var scriptsFS embed.FS
+// scriptsFS (the //go:embed scripts/*.sh var) is declared in offload.go — same
+// package, same embed glob, so the F4 offload suite + the F2 remote-spawn suite
+// share one embedded FS. ExtractScripts below is the public extractor (vs
+// offload.go's private extractScripts for the offload-dispatch path).
 
 // ExtractScripts writes the embedded *.sh to a fresh tempdir (executable) and
 // returns the dir. The remote-spawn scripts reference each other via $HERE, so
