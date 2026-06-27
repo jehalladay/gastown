@@ -51,7 +51,11 @@ func findActivePatrol(cfg PatrolConfig) (patrolID, patrolLine string, found bool
 		b = beads.New(cfg.BeadsDir)
 	}
 
-	// Find hooked patrol beads for this agent
+	// Find hooked patrol beads for this agent. Patrol molecules are wisps
+	// (ephemeral), so they live in the wisps table — an issues-only List misses
+	// them and findActivePatrol returns found=false, so `gt patrol report` fails
+	// "no active patrol found" and the loop can't cycle (fo-9ev). Query the
+	// issues table then the wisps table and combine.
 	hookedBeads, listErr := b.List(beads.ListOptions{
 		Status:   beads.StatusHooked,
 		Assignee: cfg.Assignee,
@@ -60,6 +64,16 @@ func findActivePatrol(cfg PatrolConfig) (patrolID, patrolLine string, found bool
 	if listErr != nil {
 		return "", "", false, fmt.Errorf("listing hooked beads: %w", listErr)
 	}
+	wispBeads, wispErr := b.List(beads.ListOptions{
+		Status:    beads.StatusHooked,
+		Assignee:  cfg.Assignee,
+		Priority:  -1,
+		Ephemeral: true,
+	})
+	if wispErr != nil {
+		return "", "", false, fmt.Errorf("listing hooked wisps: %w", wispErr)
+	}
+	hookedBeads = append(hookedBeads, wispBeads...)
 
 	// Identify active patrol and collect stale ones for cleanup.
 	// Stop scanning as soon as the active patrol is found to avoid N+1
