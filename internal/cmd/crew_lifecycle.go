@@ -585,6 +585,18 @@ func runCrewStop(cmd *cobra.Command, args []string) error {
 		// Not a rig name - fall through to treat as crew name
 	}
 
+	// Handle "rig name..." form (e.g. "gt crew stop reactivecli emma"): when the
+	// first of multiple args is a valid rig name, use it as the rig and treat the
+	// rest as crew names — mirroring runCrewStart. Without this, the rig name was
+	// processed as a crew name and printed a spurious "No session found for
+	// reactivecli/reactivecli" before stopping the real crew.
+	if crewRig == "" {
+		if rig, rest, ok := splitLeadingRig(args, isValidRigName); ok {
+			crewRig = rig
+			args = rest
+		}
+	}
+
 	var lastErr error
 	t := tmux.NewTmux()
 
@@ -665,6 +677,24 @@ func runCrewStop(cmd *cobra.Command, args []string) error {
 	}
 
 	return lastErr
+}
+
+// isValidRigName reports whether name resolves to a real rig.
+func isValidRigName(name string) bool {
+	_, _, err := getRig(name)
+	return err == nil
+}
+
+// splitLeadingRig handles the "rig name..." arg form: if there is more than one
+// arg and the first one is a valid rig name (per isRig) without a "/", it is
+// peeled off as the rig and the remaining args returned as crew names. Pulled
+// out as a pure helper so the rig-vs-crew arg decision is unit-testable without a
+// town workspace. Returns ok=false (and leaves args untouched) otherwise.
+func splitLeadingRig(args []string, isRig func(string) bool) (rig string, rest []string, ok bool) {
+	if len(args) > 1 && !strings.Contains(args[0], "/") && isRig(args[0]) {
+		return args[0], args[1:], true
+	}
+	return "", args, false
 }
 
 // runCrewStopAll stops all running crew sessions.
