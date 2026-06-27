@@ -315,6 +315,25 @@ func extractMoleculeID(description string) string {
 	return ""
 }
 
+// firstHookedOrInProgress returns the first bead assigned to target that is
+// hooked or in_progress in db, checking both the issues table and the wisps
+// (ephemeral) table. Patrol wisps (hq-wisp-*) live in the wisps table, so an
+// issues-only query misses them (fo-9ev). Order: hooked-issues, hooked-wisps,
+// in_progress-issues, in_progress-wisps.
+func firstHookedOrInProgress(db *beads.Beads, target string) []*beads.Issue {
+	for _, q := range []beads.ListOptions{
+		{Status: beads.StatusHooked, Assignee: target, Priority: -1},
+		{Status: beads.StatusHooked, Assignee: target, Priority: -1, Ephemeral: true},
+		{Status: "in_progress", Assignee: target, Priority: -1},
+		{Status: "in_progress", Assignee: target, Priority: -1, Ephemeral: true},
+	} {
+		if found, err := db.List(q); err == nil && len(found) > 0 {
+			return found
+		}
+	}
+	return nil
+}
+
 func runMoleculeStatus(cmd *cobra.Command, args []string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -444,21 +463,15 @@ func runMoleculeStatus(cmd *cobra.Command, args []string) error {
 		// When the Mayor slings an hq-* bead to a polecat, the bead lives in
 		// townRoot/.beads, not the rig's .beads database.
 		// See: https://github.com/steveyegge/gastown/issues/1438
+		//
+		// fo-9ev: this must also check the wisps (ephemeral) table. Patrol wisps
+		// (hq-wisp-*) hooked to a rig witness live in the TOWN db's wisps table,
+		// not the issues table — so a plain List (issues-only) misses them and
+		// `gt hook` reports "Nothing on hook" while `gt show <id>` (prefix-routed,
+		// wisp-aware) finds it. Query issues then wisps, hooked then in_progress.
 		if len(hookedBeads) == 0 && !isTownLevelRole(target) && townRoot != "" {
 			townB := beads.New(filepath.Join(townRoot, ".beads"))
-			if townHooked, err := townB.List(beads.ListOptions{
-				Status:   beads.StatusHooked,
-				Assignee: target,
-				Priority: -1,
-			}); err == nil && len(townHooked) > 0 {
-				hookedBeads = townHooked
-			} else if townInProgress, err := townB.List(beads.ListOptions{
-				Status:   "in_progress",
-				Assignee: target,
-				Priority: -1,
-			}); err == nil && len(townInProgress) > 0 {
-				hookedBeads = townInProgress
-			}
+			hookedBeads = firstHookedOrInProgress(townB, target)
 		}
 
 		if len(hookedBeads) > 0 {
