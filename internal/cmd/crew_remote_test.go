@@ -133,7 +133,7 @@ func TestBuildRemoteSpawnPlan(t *testing.T) {
 	// stable unit, per-var --setenv, sh -lc with the node PATH exported + startup.
 	sr := strings.Join(plan.SystemdRun, " ")
 	for _, want := range []string{
-		"sudo systemd-run --unit=gt-crew-max-rc-crew-max --property=Restart=on-failure",
+		"sudo systemd-run --unit=gt-crew-max-rc-crew-max --property=Restart=on-failure --uid=ubuntu",
 		"--setenv=GT_DOLT_HOST=127.0.0.1",
 		"--setenv=GT_DOLT_PORT=13307",
 		"--setenv=GT_RIG=reactivecli",

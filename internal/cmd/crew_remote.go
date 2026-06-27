@@ -305,7 +305,11 @@ func buildRemoteSpawnPlan(node, crewName, scriptDir string, env map[string]strin
 
 	systemd := []string{"sudo", "systemd-run",
 		"--unit=gt-crew-" + crewName + "-" + unitSuffix,
-		"--property=Restart=on-failure"}
+		"--property=Restart=on-failure",
+		// Run as the node login user (ubuntu), NOT root: claude refuses
+		// --dangerously-skip-permissions under root/sudo, and ubuntu owns the
+		// toolchain + tunnel key. (Dogfood-found: root launch exited status 1.)
+		"--uid=" + remoteNodeUser}
 	// HOME is the node's staged toolchain root; ensure it's set even if env omits it.
 	if _, ok := env["HOME"]; !ok {
 		systemd = append(systemd, "--setenv=HOME="+remoteNodeHome)
