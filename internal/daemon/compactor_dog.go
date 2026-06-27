@@ -602,7 +602,7 @@ func (d *Daemon) compactorCleanup(db *sql.DB, dbName string) {
 // compactorOpenDB opens a connection to the Dolt server for the given database.
 func (d *Daemon) compactorOpenDB(dbName string) (*sql.DB, error) {
 	dsn := fmt.Sprintf("root@tcp(%s:%d)/%s?parseTime=true&timeout=5s&readTimeout=30s&writeTimeout=30s",
-		"127.0.0.1", d.doltServerPort(), dbName)
+		d.doltServerHost(), d.doltServerPort(), dbName)
 	return sql.Open("mysql", dsn)
 }
 

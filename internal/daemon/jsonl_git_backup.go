@@ -285,9 +285,9 @@ func (d *Daemon) exportTableToJsonl(table, query, dir, dataDir string) (int, err
 	password := ""
 	useServer := false
 	if d.doltServer != nil && d.doltServer.IsEnabled() {
-		if d.doltServer.config.Host != "" {
-			host = d.doltServer.config.Host
-		}
+		// Honor GT_DOLT_HOST env → config.Host → default so backups follow the
+		// data plane to a remote hub at cutover (daemon-hostfix).
+		host = d.doltServerHost()
 		if d.doltServer.config.Port != 0 {
 			port = d.doltServer.config.Port
 		}

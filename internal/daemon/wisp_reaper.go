@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -147,7 +148,7 @@ func (d *Daemon) dispatchReaperDog(vars map[string]string) error {
 func (d *Daemon) reapWispsInline(config *WispReaperConfig, maxAge, deleteAge time.Duration, mol *dogMol) {
 	databases := config.Databases
 	if len(databases) == 0 {
-		databases = reaper.DiscoverDatabases("127.0.0.1", d.doltServerPort())
+		databases = reaper.DiscoverDatabases(d.doltServerHost(), d.doltServerPort())
 	}
 	if len(databases) == 0 {
 		d.logger.Printf("wisp_reaper: no databases to reap")
@@ -158,6 +159,7 @@ func (d *Daemon) reapWispsInline(config *WispReaperConfig, maxAge, deleteAge tim
 	mol.closeStep("scan")
 
 	port := d.doltServerPort()
+	host := d.doltServerHost()
 	dryRun := config.DryRun
 	var totalReaped, totalMoleculeSteps, totalOpen, totalPurged, totalMailPurged, totalAutoClosed int
 
@@ -167,7 +169,7 @@ func (d *Daemon) reapWispsInline(config *WispReaperConfig, maxAge, deleteAge tim
 		if err := reaper.ValidateDBName(dbName); err != nil {
 			continue
 		}
-		db, err := reaper.OpenDB("127.0.0.1", port, dbName, 10*time.Second, 10*time.Second)
+		db, err := reaper.OpenDB(host, port, dbName, 10*time.Second, 10*time.Second)
 		if err != nil {
 			d.logger.Printf("wisp_reaper: %s: connect error: %v", dbName, err)
 			reapErrors++
@@ -208,7 +210,7 @@ func (d *Daemon) reapWispsInline(config *WispReaperConfig, maxAge, deleteAge tim
 		if err := reaper.ValidateDBName(dbName); err != nil {
 			continue
 		}
-		db, err := reaper.OpenDB("127.0.0.1", port, dbName, 30*time.Second, 30*time.Second)
+		db, err := reaper.OpenDB(host, port, dbName, 30*time.Second, 30*time.Second)
 		if err != nil {
 			purgeErrors++
 			continue
@@ -243,7 +245,7 @@ func (d *Daemon) reapWispsInline(config *WispReaperConfig, maxAge, deleteAge tim
 		if err := reaper.ValidateDBName(dbName); err != nil {
 			continue
 		}
-		db, err := reaper.OpenDB("127.0.0.1", port, dbName, 10*time.Second, 10*time.Second)
+		db, err := reaper.OpenDB(host, port, dbName, 10*time.Second, 10*time.Second)
 		if err != nil {
 			continue
 		}
@@ -270,7 +272,7 @@ func (d *Daemon) reapWispsInline(config *WispReaperConfig, maxAge, deleteAge tim
 		if err := reaper.ValidateDBName(dbName); err != nil {
 			continue
 		}
-		db, err := reaper.OpenDB("127.0.0.1", port, dbName, 10*time.Second, 10*time.Second)
+		db, err := reaper.OpenDB(host, port, dbName, 10*time.Second, 10*time.Second)
 		if err != nil {
 			continue
 		}
@@ -296,7 +298,7 @@ func (d *Daemon) reapWispsInline(config *WispReaperConfig, maxAge, deleteAge tim
 		if err := reaper.ValidateDBName(dbName); err != nil {
 			continue
 		}
-		db, err := reaper.OpenDB("127.0.0.1", port, dbName, 10*time.Second, 10*time.Second)
+		db, err := reaper.OpenDB(host, port, dbName, 10*time.Second, 10*time.Second)
 		if err != nil {
 			autoCloseErrors++
 			continue
@@ -343,4 +345,20 @@ func (d *Daemon) doltServerPort() int {
 		return d.doltServer.config.Port
 	}
 	return 3307
+}
+
+// doltServerHost returns the Dolt server host the daemon's client-connects
+// (reaper/backup/compactor) should target. Precedence: GT_DOLT_HOST env →
+// configured DoltServerConfig.Host → "127.0.0.1". This makes those daemons
+// FOLLOW the data plane to a remote hub at cutover instead of pinning the
+// local laptop server (fo-9ev-adjacent daemon-hostfix). Mirrors doltServerPort
+// plus the env override the bd/mail data path already honors.
+func (d *Daemon) doltServerHost() string {
+	if h := os.Getenv("GT_DOLT_HOST"); h != "" {
+		return h
+	}
+	if d.doltServer != nil && d.doltServer.config.Host != "" {
+		return d.doltServer.config.Host
+	}
+	return "127.0.0.1"
 }
