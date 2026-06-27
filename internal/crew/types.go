@@ -22,6 +22,12 @@ type CrewWorker struct {
 
 	// UpdatedAt is when the crew worker was last updated.
 	UpdatedAt time.Time `json:"updated_at"`
+
+	// RemoteNode is the cluster node instance ID this crew's agent runs on when
+	// spawned via `gt crew start --remote` (empty = local). Persisted so the agent
+	// is inspectable host-side (gt crew status shows the node) without sshing it —
+	// the F2 observability requirement.
+	RemoteNode string `json:"remote_node,omitempty"`
 }
 
 // Summary provides a concise view of crew worker status.

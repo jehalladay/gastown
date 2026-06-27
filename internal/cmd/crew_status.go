@@ -29,6 +29,7 @@ type CrewStatusItem struct {
 	GitUntracked []string `json:"git_untracked,omitempty"`
 	MailTotal    int      `json:"mail_total"`
 	MailUnread   int      `json:"mail_unread"`
+	RemoteNode   string   `json:"remote_node,omitempty"` // cluster node if spawned via --remote (F2 observability)
 }
 
 func runCrewStatus(cmd *cobra.Command, args []string) error {
@@ -122,6 +123,9 @@ func runCrewStatus(cmd *cobra.Command, args []string) error {
 		fmt.Printf("%s %s/%s\n", sessionStatus, item.Rig, item.Name)
 		fmt.Printf("  Path:   %s\n", item.Path)
 		fmt.Printf("  Branch: %s\n", item.Branch)
+		if item.RemoteNode != "" {
+			fmt.Printf("  Remote: %s\n", style.Bold.Render(item.RemoteNode)) // F2: agent runs on this cluster node
+		}
 
 		if item.GitClean {
 			fmt.Printf("  Git:    %s\n", style.Dim.Render("clean"))
@@ -194,6 +198,7 @@ func buildCrewStatusItems(r *rig.Rig, workers []*crew.CrewWorker, t *tmux.Tmux) 
 			GitUntracked: untracked,
 			MailTotal:    mailTotal,
 			MailUnread:   mailUnread,
+			RemoteNode:   w.RemoteNode,
 		}
 		if hasSession {
 			item.SessionID = sessionID

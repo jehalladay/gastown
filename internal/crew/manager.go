@@ -527,6 +527,26 @@ func (m *Manager) saveState(crew *CrewWorker) error {
 	return nil
 }
 
+// SetRemoteNode records (or clears, with "") the cluster node a crew's agent runs
+// on, persisted to state.json so the remote agent is inspectable host-side via
+// `gt crew status` (F2 observability). Locks the crew to avoid a concurrent
+// Start/Remove race.
+func (m *Manager) SetRemoteNode(name, node string) error {
+	fl, err := m.lockCrew(name)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = fl.Unlock() }()
+
+	worker, err := m.getLocked(name)
+	if err != nil {
+		return err
+	}
+	worker.RemoteNode = node
+	worker.UpdatedAt = time.Now()
+	return m.saveState(worker)
+}
+
 // loadState reads crew worker state from disk.
 func (m *Manager) loadState(name string) (*CrewWorker, error) {
 	stateFile := m.stateFile(name)
