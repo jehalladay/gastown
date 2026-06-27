@@ -53,6 +53,12 @@ func darwinSwapUsedPercent() (float64, error) {
 // vmStatPageRe parses lines like `Pages free: 12345.` from vm_stat.
 var vmStatPageRe = regexp.MustCompile(`Pages (free|inactive|speculative|purgeable):\s+([0-9]+)\.`)
 
+// vmStatPageSizeRe parses the page size vm_stat declares in its own header, e.g.
+// `Mach Virtual Memory Statistics: (page size of 16384 bytes)`. The page size is
+// NOT a constant 4096: Apple Silicon uses 16 KiB pages, so a hardcoded 4096
+// under-counts free memory 4x and trips spurious CRITICAL on healthy hosts.
+var vmStatPageSizeRe = regexp.MustCompile(`page size of ([0-9]+) bytes`)
+
 // darwinFreeReclaimableMB sums free + inactive + speculative + purgeable pages
 // (the memory the kernel can reclaim before swapping harder) in MB. Best-effort:
 // returns 0 if vm_stat is unreadable (CheckMemoryPressure then relies on swap%).
@@ -63,7 +69,21 @@ func darwinFreeReclaimableMB() uint64 {
 	if err != nil {
 		return 0
 	}
-	const pageSize = 4096 // macOS vm_stat reports 4 KiB pages
+	return parseVMStatFreeMB(out)
+}
+
+// parseVMStatFreeMB sums the reclaimable pages from `vm_stat` output and converts
+// to MB using the page size vm_stat declares in its OWN header — not a hardcoded
+// 4096. Apple Silicon reports 16 KiB pages, so assuming 4 KiB under-counts free
+// memory 4x and trips spurious CRITICAL. Falls back to 4 KiB only if the header
+// is unparseable. Pure (no syscalls) so the page-size handling is unit-testable.
+func parseVMStatFreeMB(out []byte) uint64 {
+	var pageSize uint64 = 4096
+	if m := vmStatPageSizeRe.FindSubmatch(out); m != nil {
+		if v, err := strconv.ParseUint(string(m[1]), 10, 64); err == nil && v > 0 {
+			pageSize = v
+		}
+	}
 	var pages uint64
 	for _, m := range vmStatPageRe.FindAllSubmatch(out, -1) {
 		if v, err := strconv.ParseUint(string(m[2]), 10, 64); err == nil {
