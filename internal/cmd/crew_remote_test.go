@@ -54,6 +54,22 @@ func TestRemoteAgentEnv(t *testing.T) {
 			env["GT_DOLT_HOST"], env["GT_DOLT_PORT"])
 	}
 
+	// GT_ROOT (+ GIT_CEILING_DIRECTORIES) MUST be the NODE crew-clone path, NOT the host
+	// town root — the dogfood (hq-wwxq gap #4) found GT_ROOT=/Users/.../gt baked into the
+	// node session, a host path that doesn't exist there. The node crew clone provision
+	// stages (with .beads) is /opt/gastown/<crew>; that is the only root that resolves on
+	// the node. A host path makes bd/gt walk a nonexistent tree.
+	wantRoot := "/opt/gastown/gastown_eng_lead"
+	if env["GT_ROOT"] != wantRoot {
+		t.Errorf("GT_ROOT = %q, want node crew-clone path %q (NOT the host town root)", env["GT_ROOT"], wantRoot)
+	}
+	if env["GIT_CEILING_DIRECTORIES"] != wantRoot {
+		t.Errorf("GIT_CEILING_DIRECTORIES = %q, want %q", env["GIT_CEILING_DIRECTORIES"], wantRoot)
+	}
+	if strings.HasPrefix(env["GT_ROOT"], "/town") || strings.HasPrefix(env["GT_ROOT"], "/Users") {
+		t.Errorf("GT_ROOT %q is a host path — must be the node crew-clone path", env["GT_ROOT"])
+	}
+
 	// remoteEnvAssignments renders sorted KEY=VALUE; spot-check it includes the overlay.
 	got := remoteEnvAssignments(env)
 	var hasPort bool

@@ -271,12 +271,17 @@ func remoteAgentDoltEnv() map[string]string {
 // orchestration that ships this env to the node (open-remote-tunnel.sh bg + an SSM
 // systemd-run send-command) is wired against offload_ops'/eng_sr2's proven scripts.
 func remoteAgentEnv(rigName, crewName, rigPath, sessionName string) map[string]string {
-	townRoot := filepath.Dir(rigPath)
+	// GT_ROOT must be the NODE crew-clone path, NOT the host town root (filepath.Dir(
+	// rigPath) = /Users/.../gt, which does not exist on the node — dogfood gap #4). The
+	// node clone is /opt/gastown/<crew> (provision-node.sh --crew stages it WITH .beads);
+	// it's the same path buildRemoteSpawnPlan uses as the agent's cwd. AgentEnv sets both
+	// GT_ROOT and GIT_CEILING_DIRECTORIES from this, so both land node-correct.
+	nodeRoot := remoteNodeHome + "/" + crewName
 	env := config.AgentEnv(config.AgentEnvConfig{
 		Role:        "crew",
 		Rig:         rigName,
 		AgentName:   crewName,
-		TownRoot:    townRoot,
+		TownRoot:    nodeRoot,
 		SessionName: sessionName,
 	})
 	// Overlay the reverse-tunnel Dolt endpoint (must win over any local default).
