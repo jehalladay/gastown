@@ -497,6 +497,55 @@ type ProcessResult struct {
 	NoOp           bool // Branch is not ahead of target (rebased to empty) — merge refused, not a failure
 }
 
+// maybeAutoRebase rebases a stale-but-clean source branch onto the target so the
+// refinery lands it instead of rejecting it as a conflict (F8 / rc-vf94 D1). It
+// implements the 3-state predicate (eng_sr2's check_rebase.sh logic):
+//
+//   - UP-TO-DATE: target is already an ancestor of branch → no rebase, returns
+//     (false, nil); the existing merge path proceeds unchanged.
+//   - STALE-BUT-CLEAN: target advanced past branch's base AND `git rebase target`
+//     applies with no conflict → branch is rebased, returns (true, nil); caller
+//     re-runs gates + proceeds to squash.
+//   - REAL-CONFLICT: the rebase hits a conflict → the rebase is aborted (no
+//     half-rebased worktree, no silent auto-resolve) and returns (false, nil) so
+//     the caller falls through to the existing CheckConflicts reject (assign_back).
+//
+// Only an unexpected git error (not a content conflict) returns a non-nil error.
+// The discriminator is the ATTEMPTED rebase, not a dry-run heuristic: clean-apply
+// == clean, conflict-on-apply == real. Leaves the worktree on `branch` on a
+// successful rebase; the caller restores the target checkout.
+func (e *Engineer) maybeAutoRebase(branch, target string) (rebased bool, err error) {
+	// Cheap "is it even stale?" gate: if target is already an ancestor of branch,
+	// branch contains all of target — nothing to rebase.
+	upToDate, ancErr := e.git.IsAncestor(target, branch)
+	if ancErr != nil {
+		return false, fmt.Errorf("is-ancestor(%s, %s): %w", target, branch, ancErr)
+	}
+	if upToDate {
+		return false, nil
+	}
+
+	// Stale: attempt the rebase. We must be ON branch to rebase it onto target.
+	if err := e.git.Checkout(branch); err != nil {
+		return false, fmt.Errorf("checkout %s for rebase: %w", branch, err)
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] %s is behind %s — attempting auto-rebase...\n", branch, target)
+	if rebErr := e.git.Rebase(target); rebErr != nil {
+		// Conflict (or other rebase failure): abort to leave a clean worktree, then
+		// signal "not rebased" so the caller's existing reject path handles it. A
+		// rebase that can't auto-apply is a REAL conflict — never auto-resolved.
+		if abortErr := e.git.AbortRebase(); abortErr != nil {
+			// Best-effort recovery; surface as an error so we don't proceed on a
+			// dirty worktree.
+			return false, fmt.Errorf("rebase of %s onto %s conflicted (%v) and abort failed: %w", branch, target, rebErr, abortErr)
+		}
+		_, _ = fmt.Fprintf(e.output, "[Engineer] auto-rebase of %s hit a real conflict — leaving for reject/assign-back\n", branch)
+		return false, nil
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] auto-rebased %s onto %s (clean)\n", branch, target)
+	return true, nil
+}
+
 // doMerge performs the actual git merge operation.
 //
 // Note: the live refinery runs the on-disk formula (mol-refinery-patrol), not this
@@ -545,6 +594,41 @@ func (e *Engineer) doMerge(ctx context.Context, branch, target, sourceIssue stri
 	if err := e.git.Pull("origin", target); err != nil {
 		// Pull might fail if nothing to pull, that's ok
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: pull from origin/%s: %v (continuing)\n", target, err)
+	}
+
+	// Step 2.5 (F8): auto-rebase a stale-but-clean MR onto the freshly-pulled
+	// target instead of letting it be rejected as a conflict below. The refinery
+	// otherwise rejects an MR whose base has fallen behind even when it would
+	// rebase cleanly — the root of the rebase-treadmill. Only runs when
+	// on_conflict=auto_rebase; the default (assign_back) path is unchanged. A
+	// REAL conflict on rebase is left to the existing CheckConflicts reject (no
+	// silent auto-resolve). The rebase is on the SOURCE branch pre-squash, so the
+	// later MergeSquash is unaffected (squash-aware, per the merge-flow §6 review).
+	if e.config.OnConflict == "auto_rebase" {
+		if rebased, rerr := e.maybeAutoRebase(branch, target); rerr != nil {
+			return ProcessResult{
+				Success: false,
+				Error:   fmt.Sprintf("auto-rebase of %s onto %s failed: %v", branch, target, rerr),
+			}
+		} else if rebased {
+			// Re-run gates after the rebase: the branch now sits on new target
+			// code, so prior gate results (if any) are stale. Skip only when no
+			// gates are configured.
+			if len(e.config.Gates) > 0 {
+				_, _ = fmt.Fprintf(e.output, "[Engineer] Re-running gates after auto-rebase of %s...\n", branch)
+				if gateResult := e.runGates(ctx); !gateResult.Success {
+					return gateResult
+				}
+			}
+		}
+		// Restore the target checkout that CheckConflicts/the no-op guard expect:
+		// maybeAutoRebase leaves us on the source branch on success.
+		if err := e.git.Checkout(target); err != nil {
+			return ProcessResult{
+				Success: false,
+				Error:   fmt.Sprintf("failed to re-checkout target %s after auto-rebase: %v", target, err),
+			}
+		}
 	}
 
 	// Step 3: Check for merge conflicts (using local branch)
