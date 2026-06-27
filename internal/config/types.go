@@ -98,8 +98,10 @@ type TownSettings struct {
 	// Managed by cost-tier presets alongside RoleAgents.
 	RoleEffort map[string]string `json:"role_effort,omitempty"`
 
-	// ForceMaxEffort, when true, forces EVERY agent town-wide to launch at "max"
-	// reasoning effort, overriding any rig/town role_effort and GT_COST_TIER preset
+	// ForceMaxEffort, when true, forces EVERY agent town-wide to launch at
+	// "ultracode" — the highest reasoning effort tier, ABOVE "max" (rc-dci).
+	// (The field name predates the max→ultracode correction; "max" is NOT the
+	// ceiling — see AgentEnv.) It overrides any rig/town role_effort and GT_COST_TIER preset
 	// (the override is applied after effort resolution in AgentEnv, so it cannot be
 	// silently downgraded). Owner directive (rc-dci). Default false preserves the
 	// existing per-role behavior; set true in <town>/settings/config.json to activate.
