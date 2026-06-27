@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 
@@ -91,6 +92,17 @@ func runCrewStartRemote(crewMgr *crew.Manager, r *rig.Rig, name, node string) er
 	}
 	_ = startupCmd // consumed by the orchestration step (joint live wiring with offload_ops)
 
+	// The reverse tunnel needs the persistent key passed explicitly on an
+	// embedded-extract host (the vendored script's hardcoded key-paths don't
+	// resolve from a tempdir → it would fall to the fragile ephemeral key). Fail
+	// loud now rather than let the tunnel silently use the TTL-racing path.
+	tunnelKey := tunnelKeyEnv()
+	if tunnelKey == nil {
+		return fmt.Errorf("gt crew start --remote: set GT_TUNNEL_KEY to the persistent offload-tunnel key path "+
+			"(staged on this host by offload_ops); the reverse tunnel to %s needs it (embedded-extract can't "+
+			"auto-detect the reactivecli crew-dir key)", node)
+	}
+
 	// ponytail: the orchestration that SHIPS this env+command to the node
 	// (open-remote-tunnel.sh bg + an SSM systemd-run send-command) drives
 	// offload_ops'/eng_sr2's proven scripts; it's wired in the joint live session
@@ -160,6 +172,20 @@ func remoteAgentStartupCommand(rigName, crewName, rigPath, sessionName string) (
 		Topic:       "start",
 		SessionName: sessionName,
 	}, rigPath, beacon, "")
+}
+
+// tunnelKeyEnv maps gt's GT_TUNNEL_KEY (the persistent .offload-tunnel-key path
+// staged on the spawn-host by offload_ops) to TUNNEL_SSH_KEY, which the vendored
+// open-remote-tunnel.sh honors as priority #1 (auto-setting TUNNEL_AUTHORIZED_KEY=1
+// to skip the fragile 60s-TTL ephemeral key). CRITICAL on an embedded-extract host:
+// the script's hardcoded reactivecli key-paths don't resolve from a tempdir, so it
+// would fall to the ephemeral path unless gt passes the key explicitly. Returns nil
+// when GT_TUNNEL_KEY is unset (caller surfaces a clear error — the tunnel needs it).
+func tunnelKeyEnv() []string {
+	if k := os.Getenv("GT_TUNNEL_KEY"); k != "" {
+		return []string{"TUNNEL_SSH_KEY=" + k}
+	}
+	return nil
 }
 
 // remoteEnvAssignments renders env as deterministically-ordered KEY=VALUE strings

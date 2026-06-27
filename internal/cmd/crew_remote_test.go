@@ -62,3 +62,22 @@ func TestRemoteAgentEnv(t *testing.T) {
 		}
 	}
 }
+
+// TestTunnelKeyEnv verifies gt maps GT_TUNNEL_KEY -> TUNNEL_SSH_KEY (which the
+// vendored open-remote-tunnel.sh honors as priority #1, avoiding the fragile 60s
+// ephemeral key), and returns nil when unset so the caller fails loud.
+func TestTunnelKeyEnv(t *testing.T) {
+	t.Run("unset -> nil (caller errors)", func(t *testing.T) {
+		t.Setenv("GT_TUNNEL_KEY", "")
+		if got := tunnelKeyEnv(); got != nil {
+			t.Errorf("tunnelKeyEnv() = %v, want nil when GT_TUNNEL_KEY unset", got)
+		}
+	})
+	t.Run("set -> TUNNEL_SSH_KEY=<path>", func(t *testing.T) {
+		t.Setenv("GT_TUNNEL_KEY", "/opt/keys/.offload-tunnel-key")
+		got := tunnelKeyEnv()
+		if len(got) != 1 || got[0] != "TUNNEL_SSH_KEY=/opt/keys/.offload-tunnel-key" {
+			t.Errorf("tunnelKeyEnv() = %v, want [TUNNEL_SSH_KEY=/opt/keys/.offload-tunnel-key]", got)
+		}
+	})
+}
