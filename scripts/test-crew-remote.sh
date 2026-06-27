@@ -89,14 +89,27 @@ else
   SESSION="${GT_REMOTE_TEST_SESSION:-$SESSION}"
 
   # node_run <script-text> — run a script on the node as ubuntu via ssm-run.sh, echo output.
+  # Unique filename per call via a counter (mktemp with a trailing-suffix template
+  # collides across calls on macOS — the X-run must be terminal). Counter is global.
+  NODE_RUN_SEQ=0
   node_run() {
-    local f; f="$(mktemp "$TEST_DIR/node-XXXX.sh")"
+    NODE_RUN_SEQ=$((NODE_RUN_SEQ+1))
+    local f="$TEST_DIR/node-cmd-${NODE_RUN_SEQ}-$$.sh"
     { echo 'if [ -z "${BASH_VERSION:-}" ]; then exec bash "$0" "$@"; fi'
       echo 'export PATH=/opt/gastown/.local/bin:/opt/gastown/node/bin:/opt/gastown/.npm-global/bin:$PATH'
       echo 'TMUX_AS="sudo -u ubuntu HOME=/opt/gastown tmux"'
       cat; } > "$f"
     AWS_PROFILE_SCIENCE="${AWS_PROFILE_SCIENCE:-science}" bash "$SSM_RUN" "$NODE" "$f" "${1:-90}" 2>&1
   }
+
+  # Idempotency: clear any prior node tmux session + host tunnel so StartTunnel binds
+  # clean (a lingering -R 13307 makes the verb's tunnel-open error). A re-run must start fresh.
+  echo "  pre-clean: prior node session + host tunnel..."
+  node_run 30 <<NODE >/dev/null 2>&1 || true
+\$TMUX_AS kill-session -t $SESSION 2>/dev/null || true
+NODE
+  pkill -f -- "-R ${GT_DOLT_PORT_FWD:-13307}" 2>/dev/null || true
+  sleep 3
 
   echo "  spawning $RIG/$CREW on $NODE via the verb..."
   spawn_out="$(cd "$HOME/gt" && GT_TUNNEL_KEY="$GT_TUNNEL_KEY" "$GT" crew start "$RIG" "$CREW" --remote "$NODE" 2>&1)"

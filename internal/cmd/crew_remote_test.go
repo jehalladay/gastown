@@ -22,6 +22,16 @@ func TestRemoteAgentDoltEnv(t *testing.T) {
 	if env["GT_DOLT_PORT"] == "3307" {
 		t.Error("GT_DOLT_PORT must not be the local-default 3307 — the tunnel forwards to a distinct node port")
 	}
+	// CRITICAL: must ALSO set BEADS_DOLT_* — the agent's INTERACTIVE bd (typed into
+	// the REPL) reads these directly; the GT_->BEADS_ translation only covers bd
+	// subprocesses gt spawns. Without these, the agent's bd hits the node's local
+	// 3307 (empty) and fails "no Dolt" (dogfood-found).
+	if env["BEADS_DOLT_PORT"] != "13307" {
+		t.Errorf("BEADS_DOLT_PORT = %q, want 13307 (interactive bd reads this directly)", env["BEADS_DOLT_PORT"])
+	}
+	if env["BEADS_DOLT_SERVER_HOST"] != "127.0.0.1" {
+		t.Errorf("BEADS_DOLT_SERVER_HOST = %q, want 127.0.0.1", env["BEADS_DOLT_SERVER_HOST"])
+	}
 }
 
 // TestRemoteAgentEnv verifies the computed remote-agent env carries the GT_*

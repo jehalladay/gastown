@@ -196,6 +196,12 @@ func runCrewStartRemote(crewMgr *crew.Manager, r *rig.Rig, name, node string) er
 		return fmt.Errorf("launching remote agent on %s: %w\n%s", node, err, out)
 	}
 
+	// Record the node so the remote agent is inspectable host-side (gt crew status)
+	// without sshing it — F2 observability. Non-fatal: the agent is already up.
+	if rnErr := crewMgr.SetRemoteNode(worker.Name, node); rnErr != nil {
+		style.PrintWarning("agent launched but could not record remote node for %s (gt crew status won't show it): %v", worker.Name, rnErr)
+	}
+
 	fmt.Printf("%s Remote crew agent %s/%s launched on %s (session %s)\n",
 		style.Bold.Render("✓"), r.Name, worker.Name, node, sessionName)
 	fmt.Printf("  Dolt via tunnel: %s:%s | HOME: %s/%s\n",
@@ -234,13 +240,21 @@ func indentLines(s, prefix string) string {
 }
 
 // remoteAgentDoltEnv returns the Dolt-connection env a remotely-spawned agent must
-// export so its bd/gt-mail reach the host's Dolt through the reverse tunnel. These
-// override the local-default localhost:3307; GT_DOLT_HOST/PORT propagate to
-// BEADS_DOLT_SERVER_HOST/PORT for bd subprocesses (internal/beads).
+// export so its bd/gt-mail reach the host's Dolt through the reverse tunnel.
+//
+// MUST set BOTH the GT_DOLT_* AND the BEADS_DOLT_* vars. The GT_DOLT_* -> BEADS_DOLT_*
+// translation (internal/beads translateDoltPort) only fires for bd SUBPROCESSES gt
+// spawns — but a remote crew's INTERACTIVE bd (typed into the tmux REPL) reads
+// BEADS_DOLT_* straight from its session env. config.AgentEnv seeds the base env with
+// BEADS_DOLT_PORT=3307 (the node's local, where no Dolt runs), so we must override it
+// to the tunnel port here, or the agent's bd hits the node's empty 3307 and fails
+// "no Dolt". (Dogfood-found: agent booted but its bd couldn't reach the host DB.)
 func remoteAgentDoltEnv() map[string]string {
 	return map[string]string{
-		"GT_DOLT_HOST": remoteDoltHost,
-		"GT_DOLT_PORT": remoteDoltFwdPort,
+		"GT_DOLT_HOST":           remoteDoltHost,
+		"GT_DOLT_PORT":           remoteDoltFwdPort,
+		"BEADS_DOLT_SERVER_HOST": remoteDoltHost,
+		"BEADS_DOLT_PORT":        remoteDoltFwdPort,
 	}
 }
 
