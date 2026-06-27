@@ -845,6 +845,14 @@ func (d *Daemon) heartbeat(state *State) {
 	d.metrics.recordHeartbeat(d.ctx)
 	d.logger.Println("Heartbeat starting (recovery-focused)")
 
+	// F10 Phase-2: proactively park idle/0-bead crew if swap is critical, BEFORE
+	// the rest of the tick does memory-hungry work — frees memory ahead of the
+	// kernel OOM-killer (which has historically picked Dolt). No-op (cheap early
+	// return) unless operational.daemon.shed_swap_critical_percent is configured.
+	if parked := d.checkSwapShed(); len(parked) > 0 {
+		d.logger.Printf("shed: parked %d idle session(s) under critical swap: %v", len(parked), parked)
+	}
+
 	// Invalidate the per-tick rigs cache so this heartbeat re-reads from disk.
 	// Within a tick the cache coalesces the ~10 getKnownRigs() call sites into
 	// a single read; invalidating here ensures we pick up rigs.json changes

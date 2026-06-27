@@ -64,6 +64,23 @@ func availableMemoryGB() float64 {
 	return float64(availBytes) / (1024 * 1024 * 1024)
 }
 
+// swapUsedPercent returns swap used as a percent of total via `sysctl -n
+// vm.swapusage` on macOS. Returns -1 when unavailable or no swap configured
+// (so a missing/zero swap never trips the critical-shed threshold).
+func swapUsedPercent() float64 {
+	cmd := exec.Command("sysctl", "-n", "vm.swapusage")
+	util.SetDetachedProcessGroup(cmd)
+	out, err := cmd.Output()
+	if err != nil {
+		return -1
+	}
+	pct, ok := parseSwapUsagePercent(strings.TrimSpace(string(out)))
+	if !ok {
+		return -1
+	}
+	return pct
+}
+
 func parseVMStatValue(line string) uint64 {
 	parts := strings.SplitN(line, ":", 2)
 	if len(parts) < 2 {

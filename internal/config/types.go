@@ -372,6 +372,13 @@ type DaemonThresholds struct {
 	// PressureMaxSessions is the maximum number of concurrent agent tmux
 	// sessions before new non-infrastructure spawns are deferred. Disabled by default (0 = unlimited).
 	PressureMaxSessions *int `json:"pressure_max_sessions,omitempty"`
+
+	// ShedSwapCriticalPercent is the swap-used percent above which the daemon
+	// PROACTIVELY PARKS idle, zero-active-bead crew/polecats (F10 Phase-2) to
+	// free memory before the kernel OOM-kills the data plane. Disabled by
+	// default (0). Recommended enable value: 95.0 (kernel jetsam range).
+	// Infra/data-plane sessions (mayor/witness/refinery/deacon/dog) are never shed.
+	ShedSwapCriticalPercent *float64 `json:"shed_swap_critical_percent,omitempty"`
 }
 
 // DeaconThresholds configures deacon health-check and dispatch thresholds.
