@@ -21,9 +21,18 @@ LDFLAGS := -s -w \
            -X github.com/steveyegge/gastown/internal/cmd.BuildTime=$(BUILD_TIME) \
            -X github.com/steveyegge/gastown/internal/cmd.BuiltProperly=1
 
-# ICU4C detection for macOS (required by go-icu-regex transitive dependency).
-# Homebrew installs icu4c as a keg-only package, so headers/libs aren't on the
-# default search path. Auto-detect the prefix and export CGo flags.
+# Pure-Go build (default): CGO_ENABLED=0 + the gms_pure_go tag selects
+# go-mysql-server's pure-Go regex path, dropping the go-icu-regex CGo dependency
+# (the v52 beads bump pulls dolt/go-mysql-server in transitively). This lets gt
+# build on hosts without ICU4C and cross-compile (CGO_ENABLED=0 -> linux/amd64).
+# Override with `make build CGO_ENABLED=1 GO_TAGS=` for the CGo regex path; the
+# ICU4C detection below then supplies the headers/libs.
+export CGO_ENABLED ?= 0
+GO_TAGS ?= gms_pure_go
+
+# ICU4C detection for macOS — only needed for the CGo path (CGO_ENABLED=1).
+# go-icu-regex needs unicode/regex.h; Homebrew installs icu4c keg-only, so
+# headers/libs aren't on the default search path. Harmless when CGO is disabled.
 ifeq ($(shell uname),Darwin)
   ICU_PREFIX := $(shell brew --prefix icu4c 2>/dev/null)
   ifneq ($(ICU_PREFIX),)
@@ -33,12 +42,12 @@ ifeq ($(shell uname),Darwin)
 endif
 
 build:
-	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY)-proxy-server ./cmd/gt-proxy-server
-	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY)-proxy-client ./cmd/gt-proxy-client
-	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY) ./cmd/gt
+	go build -tags "$(GO_TAGS)" -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY)-proxy-server ./cmd/gt-proxy-server
+	go build -tags "$(GO_TAGS)" -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY)-proxy-client ./cmd/gt-proxy-client
+	go build -tags "$(GO_TAGS)" -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY) ./cmd/gt
 
 desktop-build:
-	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_DESKTOP) ./cmd/gt-desktop
+	go build -tags "$(GO_TAGS)" -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_DESKTOP) ./cmd/gt-desktop
 
 desktop-run:
 	go run ./cmd/gt-desktop
@@ -180,7 +189,7 @@ clean:
 	rm -f $(BUILD_DIR)/$(BINARY)
 
 test: test-makefile
-	go test ./...
+	go test -tags "$(GO_TAGS)" ./...
 
 test-makefile:
 	bash scripts/check-install-path_test.sh
