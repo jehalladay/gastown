@@ -146,13 +146,49 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 
 	// Parse branch info
 	info := parseBranchName(branch)
-
-	// Override with explicit flags
-	issueID := mqSubmitIssue
-	if issueID == "" {
-		issueID = info.Issue
-	}
 	worker := info.Worker
+
+	// Resolve the source issue. Priority: explicit --issue > hooked bead > branch.
+	// The branch regex (info.Issue) MISFIRES on crew branches <crew>/<topic>: e.g.
+	// eng_sr2/p1y1-deploy-gate regexes to "deploy-gate", not the real bead p1y1
+	// (rc-vf94). So we mirror gt done — prefer the agent's hooked assignment over a
+	// branch guess, and guard against a stale-branch id — instead of trusting the
+	// regex blind (which silently back-links the wrong/no bead -> phantom-close).
+	issueID := mqSubmitIssue
+	sender := detectSender()
+	var assignedIssueIDs []string
+	loadAssignedIssueIDs := func() []string {
+		if assignedIssueIDs == nil && sender != "" {
+			assignedIssueIDs = findAssignedBeadsForAgent(cwd, sender)
+		}
+		return assignedIssueIDs
+	}
+
+	if issueID == "" {
+		// No branch-derived id yet: take the sole hooked assignment if unambiguous.
+		if info.Issue == "" {
+			if hookIssue, ambiguous := selectAssignedIssue("", loadAssignedIssueIDs()); hookIssue != "" {
+				issueID = hookIssue
+			} else if ambiguous {
+				return fmt.Errorf("cannot determine source issue from branch %q and %s has multiple active assignments; use --issue to specify", branch, sender)
+			}
+		} else {
+			issueID = info.Issue
+			// Stale-branch guard: a crew/redispatched branch may embed a wrong id
+			// (or a topic the regex misread as one). When it disagrees with the
+			// hooked bead, trust the hook. Subtask branches (gt-abc.1 under hooked
+			// gt-abc) are left alone. --issue always wins (handled above).
+			if sender != "" {
+				if hookIssue, ambiguous := selectAssignedIssue(info.Issue, loadAssignedIssueIDs()); isStaleBranchIssue(info.Issue, hookIssue) {
+					style.PrintWarning("branch %q derives issue %s but your hooked bead is %s — submitting for %s (crew-branch regex misfire or stale reuse?)", branch, info.Issue, hookIssue, hookIssue)
+					fmt.Printf("  Use --issue to override if the branch-derived id is actually correct.\n\n")
+					issueID = hookIssue
+				} else if ambiguous {
+					return fmt.Errorf("branch %q derives issue %s but %s has multiple active assignments; use --issue to disambiguate", branch, info.Issue, sender)
+				}
+			}
+		}
+	}
 
 	if issueID == "" {
 		return fmt.Errorf("cannot determine source issue from branch '%s'; use --issue to specify", branch)
