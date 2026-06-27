@@ -35,6 +35,7 @@ Workspace checks:
   - rigs-registry-valid      Check registered rigs exist (fixable)
   - mayor-exists             Check mayor/ directory structure
   - disk-space               Check filesystem has sufficient free space
+  - memory-pressure          Check memory/swap pressure (warn/shed before jetsam)
 
 Town root protection:
   - town-git                 Verify town root is under version control
@@ -162,6 +163,10 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	// root cause of cascading failures (Dolt data loss, polecat death, lost commits).
 	// Must run before infrastructure checks that might fail confusingly on full disks.
 	d.Register(doctor.NewDiskSpaceCheck())
+
+	// Memory/swap-pressure guard (F10) — the resource failure that nearly took the
+	// control plane (and Dolt) down twice via jetsam. Sits beside disk-space.
+	d.Register(doctor.NewMemoryPressureCheck())
 
 	// Infrastructure prerequisites — these must pass before any check that
 	// shells out to bd/dolt or queries the database. Order matters:
