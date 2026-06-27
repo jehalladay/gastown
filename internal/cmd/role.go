@@ -434,6 +434,13 @@ func (info RoleInfo) ActorString() string {
 
 // getRoleHome returns the canonical home directory for a role.
 func getRoleHome(role Role, rig, polecat, townRoot string) string {
+	// Off-town (F2 remote agent, hq-wwxq): with no town root, role home is undefined —
+	// return "" rather than a misleading RELATIVE path (filepath.Join("", rig, "crew", x)
+	// = "rig/crew/x", which would resolve against an arbitrary cwd). Callers already guard
+	// empty Home (role.go display, sling_target hookRoot).
+	if townRoot == "" {
+		return ""
+	}
 	switch role {
 	case RoleMayor:
 		return filepath.Join(townRoot, "mayor")

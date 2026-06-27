@@ -131,6 +131,17 @@ func runPrime(cmd *cobra.Command, args []string) (retErr error) {
 		return err
 	}
 	if townRoot == "" {
+		// Off-town path (F2 remote crew, hq-wwxq): a remote agent runs in a provisioned
+		// clone with NO local town (no mayor/town.json), so workspace.FindFromCwd returns
+		// "". But its identity IS in the env (GT_ROLE/GT_RIG/GT_CREW, set by the spawn) and
+		// its work/mail reach the town Dolt via the clone's .beads redirect over the tunnel.
+		// When that env identity is present, prime from env instead of the silent no-op —
+		// otherwise the remote agent never gets identity/GUPP and sits as a bare REPL.
+		// This branch was already a dead `return nil` for every local agent (they all have
+		// townRoot != ""), so adding the env path here cannot regress any on-town path.
+		if envIdentityPresent() {
+			return primeFromEnv(cwd)
+		}
 		return nil // Silent exit - not in workspace and not enabled
 	}
 
@@ -242,6 +253,95 @@ func runPrime(cmd *cobra.Command, args []string) (retErr error) {
 	}
 
 	return nil
+}
+
+// envIdentityPresent reports whether the agent's identity is fully specified in the
+// environment (GT_ROLE plus rig + crew/polecat). This is the gate for the off-town
+// prime path: only a spawn that exported a complete identity (the F2 remote launch)
+// should prime without a local town; a bare cwd with no town and no env identity must
+// still no-op (the original behavior).
+func envIdentityPresent() bool {
+	if os.Getenv("GT_ROLE") == "" || os.Getenv("GT_RIG") == "" {
+		return false
+	}
+	return os.Getenv("GT_CREW") != "" || os.Getenv("GT_POLECAT") != ""
+}
+
+// primeFromEnv primes a remote agent that has env identity but NO local town (F2,
+// hq-wwxq). It resolves identity from the env (the existing GetRoleWithContext env
+// path), then injects the context that's reachable off-town: identity confirmation,
+// role directives/GUPP (templates, not town files), hooked work + mail (which resolve
+// from the clone's .beads redirect over the tunnel — rigBeadsRoot falls back to cwd
+// when TownRoot==""), and the startup directive. It SKIPS the town-filesystem-dependent
+// steps (identity lock, worktree-integrity, role-home context file), emitting an
+// "off-town: <x> unavailable" line for each so the node logs show WHY a step didn't run
+// (observability, not a silent no-op).
+func primeFromEnv(cwd string) error {
+	roleInfo, err := GetRoleWithContext(cwd, "")
+	if err != nil {
+		return fmt.Errorf("detecting role from env: %w", err)
+	}
+
+	ctx := RoleContext{
+		Role:     roleInfo.Role,
+		Rig:      roleInfo.Rig,
+		Polecat:  roleInfo.Polecat,
+		TownRoot: "", // off-town: no local town on the node
+		WorkDir:  cwd,
+	}
+
+	explainOffTownSkip("identity lock (no town lock dir; node clone is single-agent)")
+	explainOffTownSkip("worktree integrity (no town layout to validate against)")
+
+	if primeHookMode {
+		// Hook mode still needs the session-id wiring + readiness beacon; persistSessionID
+		// targets cwd (handlePrimeHookMode no-ops the townRoot persist when cwd==townRoot,
+		// and off-town we pass cwd for both). This is env/cwd-only, no town-fs dependency.
+		handlePrimeHookMode(cwd, cwd)
+	}
+
+	// Compact/resume: same fast path as on-town — identity confirm + mail, no town-fs.
+	if isCompactResume() {
+		runPrimeCompactResume(ctx)
+		return nil
+	}
+
+	// Hooked work + mail: rigBeadsRoot(ctx) falls back to ctx.WorkDir when TownRoot=="",
+	// so these resolve from the clone's .beads redirect over the tunnel.
+	hookedBead, hookErr := findAgentWork(ctx)
+	if hookErr != nil && !errors.Is(hookErr, ErrHookUnresolvable) {
+		// Off-town we don't fire the witness escalation (no town to route it); surface the
+		// DB-error warning so the agent doesn't run gt done on a transient hook-query fail.
+		fmt.Fprintf(os.Stderr, "\n%s\n", style.Bold.Render("## ⚠️  DATABASE ERROR — DO NOT RUN gt done ⚠️"))
+		fmt.Fprintf(os.Stderr, "Hook query failed: %v\n", hookErr)
+		fmt.Fprintf(os.Stderr, "This is a database connectivity error (tunnel/hub), NOT an empty hook.\n")
+	}
+	injectWorkContext(ctx, hookedBead)
+
+	if _, err := outputRoleContext(ctx); err != nil {
+		return err
+	}
+
+	hasSlungWork, err := checkSlungWork(ctx, hookedBead)
+	if err != nil {
+		return err
+	}
+	explain(hasSlungWork, "Autonomous mode: hooked/in-progress work detected")
+
+	outputMoleculeContext(ctx)
+
+	if !hasSlungWork {
+		explain(true, "Startup directive: normal mode (no hooked work)")
+		outputStartupDirective(ctx)
+	}
+
+	return nil
+}
+
+// explainOffTownSkip notes a town-filesystem-dependent prime step that was skipped on a
+// remote (off-town) agent, so the node logs show why rather than silently omitting it.
+func explainOffTownSkip(what string) {
+	fmt.Printf("off-town: %s unavailable\n", what)
 }
 
 func ensureRoleWorktreeIntegrity(cwd, townRoot string, role Role) error {
