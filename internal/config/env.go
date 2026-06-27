@@ -214,11 +214,15 @@ func AgentEnv(cfg AgentEnvConfig) map[string]string {
 		effort = "high"
 	}
 	// rc-dci (owner directive): when force_max_effort is set town-wide, force
-	// every agent to "max". Applied AFTER ResolveRoleEffort so it overrides any
-	// rig/town role_effort and GT_COST_TIER preset — it cannot be silently
-	// downgraded. Default-off (field absent / false) preserves the resolved value.
+	// every agent to "ultracode" — the highest effort tier, ABOVE "max".
+	// Applied AFTER ResolveRoleEffort so it overrides any rig/town role_effort
+	// and GT_COST_TIER preset — it cannot be silently downgraded. Default-off
+	// (field absent / false) preserves the resolved value.
+	// NOTE: "max" is NOT the ceiling — setting the env var to "max" caps below
+	// ultracode AND blocks the client /effort=ultracode setting (env var wins).
+	// "ultracode" is the correct top value.
 	if ForceMaxEffort(cfg.TownRoot) {
-		effort = "max"
+		effort = "ultracode"
 	}
 	env["CLAUDE_CODE_EFFORT_LEVEL"] = effort
 

@@ -176,14 +176,15 @@ func CostTierRoleEffort(tier CostTier) map[string]string {
 }
 
 // ValidEffortLevels returns all valid effort level values.
+// "ultracode" is the highest tier, above "max" (rc-dci).
 func ValidEffortLevels() []string {
-	return []string{"low", "medium", "high", "max"}
+	return []string{"low", "medium", "high", "max", "ultracode"}
 }
 
 // IsValidEffortLevel checks if a string is a valid effort level.
 func IsValidEffortLevel(level string) bool {
 	switch level {
-	case "low", "medium", "high", "max":
+	case "low", "medium", "high", "max", "ultracode":
 		return true
 	default:
 		return false
