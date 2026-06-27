@@ -166,9 +166,12 @@ func runCrewStartRemote(crewMgr *crew.Manager, r *rig.Rig, name, node string) er
 			// DB so it can't gate here; the commit is the reliable binary-identity check.)
 			"echo \"$BDV\" | grep -q '%s' || { "+
 			"echo '[remote-spawn] FATAL: node bd is not the v52 build (commit %s) — a stale v49 bd would half-write the v52 town DB; re-provision with --agent v52 guard'; exit 75; }\n"+
-			"cd %s/%s && %s\n",
-		remoteNodePATH, bdV52Commit, bdV52Commit, remoteNodeHome, worker.Name, shellJoin(plan.SystemdRun))
-	fmt.Printf("→ Launching agent loop on %s (session %s)...\n", node, sessionName)
+			// Launch the persistent agent in a detached tmux session (-c sets the
+			// cwd; survives the SSM exit; gives claude a PTY so it stays a loop).
+			"%s\n"+
+			"tmux has-session -t %s 2>/dev/null && echo '[remote-spawn] tmux session live: %s' || { echo '[remote-spawn] FATAL: agent tmux session did not start'; exit 76; }\n",
+		remoteNodePATH, bdV52Commit, bdV52Commit, shellJoin(plan.Launch), sessionName, sessionName)
+	fmt.Printf("→ Launching persistent agent (tmux) on %s (session %s)...\n", node, sessionName)
 	out, err := offload.SSMRun(scriptDir, node, launch, "120")
 	if err != nil {
 		return fmt.Errorf("launching remote agent on %s: %w\n%s", node, err, out)
@@ -276,10 +279,10 @@ func remoteAgentStartupCommand(rigName, crewName, rigPath, sessionName string) (
 // the embed/extract + execution lands at the F2<->F4 internal/offload reconcile +
 // the joint live wiring.
 type remoteSpawnPlan struct {
-	Provision  []string // provision-node.sh --agent <node>  (stages toolchain + clones crew repo, option i)
-	Tunnel     []string // open-remote-tunnel.sh <node> 13307  (run in background; TUNNEL_SSH_KEY in env)
-	SystemdRun []string // the SSM-delivered systemd-run --scope line that launches the agent loop
-	TunnelEnv  []string // env for the tunnel command (TUNNEL_SSH_KEY=<GT_TUNNEL_KEY>)
+	Provision []string // provision-node.sh --agent <node>  (stages toolchain + clones crew repo, option i)
+	Tunnel    []string // open-remote-tunnel.sh <node> 13307  (run in background; TUNNEL_SSH_KEY in env)
+	Launch    []string // the SSM-delivered tmux-on-node line that starts the persistent agent session
+	TunnelEnv []string // env for the tunnel command (TUNNEL_SSH_KEY=<GT_TUNNEL_KEY>)
 }
 
 // remoteNodePATH is prepended so the agent resolves its staged toolchain: claude
@@ -287,45 +290,57 @@ type remoteSpawnPlan struct {
 // on the bare PATH (offload_ops verified; without it `claude` won't resolve).
 const remoteNodePATH = remoteNodeHome + "/.local/bin:" + remoteNodeHome + "/node/bin:" + remoteNodeHome + "/.npm-global/bin"
 
-// buildRemoteSpawnPlan assembles the spawn commands for crewName on node, against
-// offload_ops' verified step-4 form — a transient systemd SERVICE (not --scope):
+// buildRemoteSpawnPlan assembles the spawn commands for crewName on node. The
+// agent launches in a DETACHED TMUX SESSION on the node — mirroring the LOCAL crew
+// model (claude runs interactively in a tmux pane, a persistent PTY/REPL driven by
+// hooks/nudges), NOT a headless systemd one-shot. The earlier systemd-run sh -lc
+// form ran claude one-shot (it answered the beacon + exited) because there was no
+// PTY; tmux gives the interactive session that keeps the agent alive. `tmux
+// new-session -d` detaches so it survives the SSM command exit (like --scope did),
+// runs as the node login user, and the agent's whole life is that tmux session
+// (`tmux kill-session` is the clean stop handle).
 //
-//	sudo systemd-run --unit=gt-crew-<crew>-<unit> --property=Restart=on-failure \
-//	  --setenv=KEY=VALUE... sh -lc 'export PATH=...; <startupCmd>'
-//
-// --unit (service) over --scope: a long-lived crew agent needs crash-restart
-// (Restart=on-failure) + a clean `systemctl stop gt-crew-<crew>` kill handle;
-// --scope has neither and dies on reboot. unitSuffix makes the unit stable+unique
-// (injected — Date.now is unavailable here). The agent env (incl HOME + the tunnel
-// Dolt overlay) becomes --setenv flags; the startup runs under sh -lc with the node
-// toolchain PATH exported first.
-func buildRemoteSpawnPlan(node, crewName, scriptDir string, env map[string]string, startupCmd, unitSuffix string) remoteSpawnPlan {
+// Shape: tmux new-session -d -s <session> -e KEY=VAL... -c <cwd> 'bash -lc "export
+// PATH=<node toolchain>; exec <startupCmd>"'. Env via tmux -e (the --setenv-equiv);
+// PATH exported in the inner shell so bare `claude` resolves; startupCmd is the
+// node-safe bare-claude command. sessionName is the tmux session id (stable/unique).
+func buildRemoteSpawnPlan(node, crewName, scriptDir string, env map[string]string, startupCmd, sessionName string) remoteSpawnPlan {
 	tunnelScript := filepath.Join(scriptDir, "open-remote-tunnel.sh")
 	provisionScript := filepath.Join(scriptDir, "provision-node.sh")
+	cwd := remoteNodeHome + "/" + crewName
 
-	systemd := []string{"sudo", "systemd-run",
-		"--unit=gt-crew-" + crewName + "-" + unitSuffix,
-		"--property=Restart=on-failure",
-		// Run as the node login user (ubuntu), NOT root: claude refuses
-		// --dangerously-skip-permissions under root/sudo, and ubuntu owns the
-		// toolchain + tunnel key. (Dogfood-found: root launch exited status 1.)
-		"--uid=" + remoteNodeUser}
-	// HOME is the node's staged toolchain root; ensure it's set even if env omits it.
+	// HOME defaults to the node toolchain root if env omits it.
 	if _, ok := env["HOME"]; !ok {
-		systemd = append(systemd, "--setenv=HOME="+remoteNodeHome)
+		env = cloneEnv(env)
+		env["HOME"] = remoteNodeHome
 	}
+
+	tmux := []string{"tmux", "new-session", "-d", "-s", sessionName, "-c", cwd}
 	for _, kv := range remoteEnvAssignments(env) {
-		systemd = append(systemd, "--setenv="+kv)
+		tmux = append(tmux, "-e", kv)
 	}
-	// Export the node toolchain PATH inside the launched shell so `claude` resolves.
-	systemd = append(systemd, "sh", "-lc", "export PATH="+remoteNodePATH+":$PATH; "+startupCmd)
+	// The pane command: export the node toolchain PATH (so bare claude/gt/bd
+	// resolve), then exec the node-safe startup. exec so the agent is the pane's
+	// process (clean liveness + kill-session).
+	tmux = append(tmux, "bash", "-lc",
+		"export PATH="+remoteNodePATH+":$PATH; exec "+startupCmd)
 
 	return remoteSpawnPlan{
-		Provision:  []string{provisionScript, "--agent", node},
-		Tunnel:     []string{tunnelScript, node, remoteDoltFwdPort},
-		SystemdRun: systemd,
-		TunnelEnv:  tunnelKeyEnv(),
+		Provision: []string{provisionScript, "--agent", node},
+		Tunnel:    []string{tunnelScript, node, remoteDoltFwdPort},
+		Launch:    tmux,
+		TunnelEnv: tunnelKeyEnv(),
 	}
+}
+
+// cloneEnv returns a shallow copy so buildRemoteSpawnPlan can add HOME without
+// mutating the caller's map.
+func cloneEnv(env map[string]string) map[string]string {
+	out := make(map[string]string, len(env)+1)
+	for k, v := range env {
+		out[k] = v
+	}
+	return out
 }
 
 // tunnelKeyEnv maps gt's GT_TUNNEL_KEY (the persistent .offload-tunnel-key path

@@ -110,9 +110,10 @@ func TestRemoteAgentStartupCommandIsNodeSafe(t *testing.T) {
 	}
 }
 
-// TestBuildRemoteSpawnPlan locks the spawn-command assembly against offload_ops'
-// verified shapes: provision --agent, tunnel on the fwd port, and the systemd-run
-// --scope line carrying the agent env as --setenv flags + the startup command.
+// TestBuildRemoteSpawnPlan locks the spawn-command assembly: provision --agent,
+// tunnel on the fwd port, and the detached-tmux Launch line carrying the agent env
+// as tmux -e flags + the node PATH export + the bare-claude startup (persistent
+// PTY session, mirroring local crew — not a headless one-shot).
 func TestBuildRemoteSpawnPlan(t *testing.T) {
 	env := map[string]string{
 		"GT_DOLT_HOST": "127.0.0.1",
@@ -121,42 +122,35 @@ func TestBuildRemoteSpawnPlan(t *testing.T) {
 	}
 	plan := buildRemoteSpawnPlan("i-0abc", "max", "/tmp/scripts", env, "claude --foo beacon", "rc-crew-max")
 
-	// provision-node.sh --agent <node>
 	if got := strings.Join(plan.Provision, " "); got != "/tmp/scripts/provision-node.sh --agent i-0abc" {
 		t.Errorf("Provision = %q", got)
 	}
-	// open-remote-tunnel.sh <node> 13307
 	if got := strings.Join(plan.Tunnel, " "); got != "/tmp/scripts/open-remote-tunnel.sh i-0abc 13307" {
 		t.Errorf("Tunnel = %q", got)
 	}
-	// systemd-run as a transient SERVICE (--unit + Restart=on-failure, not --scope),
-	// stable unit, per-var --setenv, sh -lc with the node PATH exported + startup.
-	sr := strings.Join(plan.SystemdRun, " ")
+	// Detached tmux session (persistent PTY), cwd = node crew clone, env via -e.
+	lc := strings.Join(plan.Launch, " ")
 	for _, want := range []string{
-		"sudo systemd-run --unit=gt-crew-max-rc-crew-max --property=Restart=on-failure --uid=ubuntu",
-		"--setenv=GT_DOLT_HOST=127.0.0.1",
-		"--setenv=GT_DOLT_PORT=13307",
-		"--setenv=GT_RIG=reactivecli",
+		"tmux new-session -d -s rc-crew-max -c " + remoteNodeHome + "/max",
+		"-e GT_DOLT_HOST=127.0.0.1",
+		"-e GT_DOLT_PORT=13307",
+		"-e GT_RIG=reactivecli",
+		"-e HOME=" + remoteNodeHome, // defaulted when env omits it
 	} {
-		if !strings.Contains(sr, want) {
-			t.Errorf("SystemdRun missing %q in: %s", want, sr)
+		if !strings.Contains(lc, want) {
+			t.Errorf("Launch missing %q in: %s", want, lc)
 		}
 	}
-	if strings.Contains(sr, "--scope") {
-		t.Errorf("SystemdRun should use --unit service form, not --scope: %s", sr)
+	if strings.Contains(lc, "systemd-run") || strings.Contains(lc, "--scope") {
+		t.Errorf("Launch should be tmux-on-node (persistent PTY), not systemd: %s", lc)
 	}
-	// HOME defaulted when env omits it (node toolchain root).
-	if !strings.Contains(sr, "--setenv=HOME="+remoteNodeHome) {
-		t.Errorf("SystemdRun should default HOME=%s when env omits it: %s", remoteNodeHome, sr)
-	}
-	// The final arg is the sh -lc payload: exports the node toolchain PATH (so claude
-	// resolves) then runs the startup command.
-	last := plan.SystemdRun[len(plan.SystemdRun)-1]
+	// The pane command exports the node PATH then execs the bare-claude startup.
+	last := plan.Launch[len(plan.Launch)-1]
 	if !strings.Contains(last, "export PATH="+remoteNodePATH) {
-		t.Errorf("launch payload missing node PATH export: %q", last)
+		t.Errorf("pane command missing node PATH export: %q", last)
 	}
-	if !strings.HasSuffix(last, "claude --foo beacon") {
-		t.Errorf("launch payload should end with the startup command: %q", last)
+	if !strings.HasSuffix(last, "exec claude --foo beacon") {
+		t.Errorf("pane command should exec the startup: %q", last)
 	}
 }
 
