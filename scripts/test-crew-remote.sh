@@ -26,7 +26,11 @@ trap cleanup EXIT
 
 echo "=== Building gt..."
 # Pure-Go (no ICU/CGo), matching the Makefile default.
-CGO_ENABLED=0 go build -tags gms_pure_go -o "$TEST_DIR/gt" ./cmd/gt || { echo "BUILD FAILED"; exit 1; }
+# BuiltProperly=1 — macOS SIGKILLs plain `go build` gt binaries (darwin provenance
+# guard), so the binary must carry the ldflag to actually RUN the assertions.
+CGO_ENABLED=0 go build -tags gms_pure_go \
+  -ldflags "-X github.com/steveyegge/gastown/internal/cmd.BuiltProperly=1" \
+  -o "$TEST_DIR/gt" ./cmd/gt || { echo "BUILD FAILED"; exit 1; }
 GT="$TEST_DIR/gt"
 echo "OK gt built"
 
