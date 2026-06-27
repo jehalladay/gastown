@@ -11,3 +11,8 @@ func loadAverage1Sysctl() float64 {
 func availableMemoryGB() float64 {
 	return 0
 }
+
+// swapUsedPercent is unavailable on unsupported platforms (-1 = never trips).
+func swapUsedPercent() float64 {
+	return -1
+}
