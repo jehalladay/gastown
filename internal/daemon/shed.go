@@ -1,9 +1,12 @@
 package daemon
 
 import (
+	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/steveyegge/gastown/internal/constants"
+	gtgit "github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/tmux"
 )
 
@@ -42,6 +45,11 @@ type ShedCandidate struct {
 	Idle bool
 	// ActiveBeads is the count of work beads currently hooked/assigned.
 	ActiveBeads int
+	// CleanWorktree is true only when the crew's git worktree has NO
+	// uncommitted work (the sole data-loss vector under park=KillSession).
+	// Fail-safe: any uncertainty resolving or statting the worktree records
+	// this as false, so a session with possibly-unsaved work is kept alive.
+	CleanWorktree bool
 }
 
 // shedEligible reports whether a single candidate may be parked. An eligible
@@ -61,6 +69,13 @@ func (c ShedCandidate) shedEligible() bool {
 		return false
 	}
 	if c.ActiveBeads > 0 {
+		return false
+	}
+	// Data-loss gate: only shed when the worktree has nothing uncommitted.
+	// park=KillSession orphans uncommitted work; committed work is safe on
+	// disk. With this gate the worst case is killing a fully-recoverable idle
+	// crew, so auto-shed needs no per-park signoff (safe by construction).
+	if !c.CleanWorktree {
 		return false
 	}
 	return true
@@ -183,13 +198,41 @@ func (d *Daemon) gatherShedCandidates() []ShedCandidate {
 			continue
 		}
 		out = append(out, ShedCandidate{
-			Session:     name,
-			Role:        parsed.RoleType,
-			Idle:        t.IsIdle(name),
-			ActiveBeads: d.sessionActiveBeadCount(name),
+			Session:       name,
+			Role:          parsed.RoleType,
+			Idle:          t.IsIdle(name),
+			ActiveBeads:   d.sessionActiveBeadCount(name),
+			CleanWorktree: d.sessionWorktreeClean(parsed),
 		})
 	}
 	return out
+}
+
+// sessionWorktreeClean reports whether the agent's git worktree has no
+// uncommitted work. Conservative: any uncertainty (no rig/name to resolve a
+// path, or a git status error) returns false so the session is never shed when
+// it might hold unsaved work. Reuses internal/git's Status, which already
+// handles the sparse-checkout skip-worktree edge that a raw `git status
+// --porcelain` parse gets wrong (phantom 'D' deletions in sparse clones).
+func (d *Daemon) sessionWorktreeClean(parsed *ParsedIdentity) bool {
+	if parsed == nil || parsed.RigName == "" || parsed.AgentName == "" {
+		return false // can't resolve a worktree path → keep alive
+	}
+	var sub string
+	switch parsed.RoleType {
+	case constants.RoleCrew:
+		sub = "crew"
+	case constants.RolePolecat:
+		sub = "polecats"
+	default:
+		return false // only crew/polecats have a sheddable worktree
+	}
+	wt := filepath.Join(d.config.TownRoot, parsed.RigName, sub, parsed.AgentName)
+	status, err := gtgit.NewGit(wt).Status()
+	if err != nil || status == nil {
+		return false // git error / unreadable → keep alive
+	}
+	return status.Clean
 }
 
 // sessionActiveBeadCount returns the number of active (open, hooked) work beads

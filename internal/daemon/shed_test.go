@@ -6,8 +6,10 @@ import (
 
 // shedCandidate mirrors the fields selectShedVictims needs. Kept local to the
 // test to document the contract the production type must satisfy.
+// CleanWorktree defaults to true so these cases exercise the OTHER gates
+// (role/idle/beads); the worktree gate has its own dedicated tests below.
 func cand(name, role string, idle bool, activeBeads int) ShedCandidate {
-	return ShedCandidate{Session: name, Role: role, Idle: idle, ActiveBeads: activeBeads}
+	return ShedCandidate{Session: name, Role: role, Idle: idle, ActiveBeads: activeBeads, CleanWorktree: true}
 }
 
 func TestSelectShedVictims_NeverShedsDataPlaneOrInfra(t *testing.T) {
@@ -30,7 +32,7 @@ func TestSelectShedVictims_NeverShedsActive(t *testing.T) {
 	// A crew with an active bead, or busy (not idle), is never a victim.
 	in := []ShedCandidate{
 		cand("rig-polecat-busy", "polecat", false, 0), // busy at prompt
-		cand("rig-crew-working", "crew", true, 2),      // idle-at-prompt but has 2 active beads
+		cand("rig-crew-working", "crew", true, 2),     // idle-at-prompt but has 2 active beads
 	}
 	got := selectShedVictims(in, 10)
 	if len(got) != 0 {
@@ -40,7 +42,7 @@ func TestSelectShedVictims_NeverShedsActive(t *testing.T) {
 
 func TestSelectShedVictims_ShedsOnlyIdleZeroBeadCrewPolecats(t *testing.T) {
 	in := []ShedCandidate{
-		cand("hq-mayor", "mayor", true, 0),         // keep (infra)
+		cand("hq-mayor", "mayor", true, 0),           // keep (infra)
 		cand("rig-polecat-idle", "polecat", true, 0), // SHED
 		cand("rig-crew-idle", "crew", true, 0),       // SHED
 		cand("rig-crew-busy", "crew", false, 0),      // keep (busy)
@@ -54,6 +56,34 @@ func TestSelectShedVictims_ShedsOnlyIdleZeroBeadCrewPolecats(t *testing.T) {
 		if v != "rig-polecat-idle" && v != "rig-crew-idle" {
 			t.Errorf("unexpected victim %q", v)
 		}
+	}
+}
+
+func TestSelectShedVictims_NeverShedsDirtyWorktree(t *testing.T) {
+	// The data-loss gate: an idle, zero-bead crew with UNCOMMITTED work in its
+	// worktree must NOT be shed — park=KillSession would orphan that work.
+	// Committed work is always safe (worktree persists on disk); uncommitted is
+	// the only loss vector, so a dirty worktree keeps the session alive.
+	in := []ShedCandidate{
+		{Session: "rig-crew-dirty", Role: "crew", Idle: true, ActiveBeads: 0, CleanWorktree: false},
+		{Session: "rig-polecat-dirty", Role: "polecat", Idle: true, ActiveBeads: 0, CleanWorktree: false},
+	}
+	if got := selectShedVictims(in, 10); len(got) != 0 {
+		t.Fatalf("expected 0 victims (dirty worktrees), got %v", got)
+	}
+}
+
+func TestSelectShedVictims_ShedsCleanIdleZeroBeadCrew(t *testing.T) {
+	// The safe-by-construction case: clean + idle + 0-bead + crew/polecat is the
+	// ONLY thing auto-shed may kill. Worst case = killing a fully-recoverable
+	// idle crew with nothing unsaved.
+	in := []ShedCandidate{
+		{Session: "rig-crew-clean", Role: "crew", Idle: true, ActiveBeads: 0, CleanWorktree: true},
+		{Session: "rig-crew-dirty", Role: "crew", Idle: true, ActiveBeads: 0, CleanWorktree: false}, // keep
+	}
+	got := selectShedVictims(in, 10)
+	if len(got) != 1 || got[0] != "rig-crew-clean" {
+		t.Fatalf("expected only rig-crew-clean, got %v", got)
 	}
 }
 
