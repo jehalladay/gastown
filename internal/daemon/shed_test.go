@@ -1,8 +1,37 @@
 package daemon
 
 import (
+	"io"
+	"log"
 	"testing"
 )
+
+// TestSessionWorktreeCleanByName_FailSafe verifies the kill-time re-assert is
+// fail-safe: an unparseable session name, or a crew whose worktree path doesn't
+// exist, resolves to NOT clean (false) → the kill is skipped, work preserved.
+// This is the TOCTOU guard merge_warden required (re-check immediately before
+// each KillSession, since staleness accumulates across the loop).
+func TestSessionWorktreeCleanByName_FailSafe(t *testing.T) {
+	d := &Daemon{
+		config: &Config{TownRoot: t.TempDir()},
+		logger: log.New(io.Discard, "", 0),
+	}
+	cases := []struct {
+		name    string
+		session string
+	}{
+		{"unparseable session", "not-a-valid-identity"},
+		{"crew with no worktree on disk", "somerig-crew-ghost"},
+		{"town-level role has no rig worktree", "hq-mayor"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if d.sessionWorktreeCleanByName(tc.session) {
+				t.Errorf("expected false (keep alive) for %q, got true", tc.session)
+			}
+		})
+	}
+}
 
 // shedCandidate mirrors the fields selectShedVictims needs. Kept local to the
 // test to document the contract the production type must satisfy.

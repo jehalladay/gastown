@@ -165,6 +165,16 @@ func (d *Daemon) checkSwapShed() []string {
 	t := tmux.NewTmux()
 	parked := make([]string, 0, len(victims))
 	for _, v := range victims {
+		// Re-assert worktree cleanliness immediately before the kill. The
+		// CleanWorktree flag was captured in gatherShedCandidates, but staleness
+		// accumulates across the loop: an earlier KillSession (or any tick work)
+		// gives a later victim time to start writing. A TOCTOU here = data loss,
+		// so re-check now. Fail-safe: not-clean / unresolvable => skip the kill
+		// (merge_warden's class-(b) ordering review).
+		if !d.sessionWorktreeCleanByName(v) {
+			d.logger.Printf("shed: skipping %s — worktree no longer clean at kill time (re-assert)", v)
+			continue
+		}
 		if err := t.KillSession(v); err != nil {
 			d.logger.Printf("shed: failed to park %s: %v", v, err)
 			continue
@@ -173,6 +183,18 @@ func (d *Daemon) checkSwapShed() []string {
 		d.logger.Printf("shed: parked idle session %s (swap %.1f%% >= critical %.1f%%)", v, pct, threshold)
 	}
 	return parked
+}
+
+// sessionWorktreeCleanByName re-resolves a session name to its identity and
+// reports whether its worktree is currently clean. Fail-safe: an unparseable
+// name returns false (keep alive). Used to re-assert cleanliness immediately
+// before a kill, closing the capture-to-kill TOCTOU window.
+func (d *Daemon) sessionWorktreeCleanByName(session string) bool {
+	parsed, err := parseIdentity(session)
+	if err != nil || parsed == nil {
+		return false
+	}
+	return d.sessionWorktreeClean(parsed)
 }
 
 // gatherShedCandidates builds the shed roster from live tmux sessions. A session
