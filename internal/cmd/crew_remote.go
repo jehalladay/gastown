@@ -257,6 +257,24 @@ func buildRemoteLaunchScript(node, crewName, sessionName string, launchArgv []st
 			// .beads, else bd has no DB + claude has no identity. Fail loud with the exact
 			// provision command rather than launch a rootless, identity-less REPL.
 			"test -d %s/.beads || { echo '[remote-spawn] FATAL: crew clone %s missing or has no .beads — the node is not provisioned for this crew. Run: %s'; exit 78; }\n"+
+			// gap #2 (prime): install the SessionStart hook into the clone's
+			// .claude/settings.json so claude runs `gt prime --hook` on startup (+ PreCompact
+			// so it re-primes after compaction, not just first session). gt prime takes the
+			// off-town env-only path on the node (no local town; identity from GT_ROLE/GT_RIG/
+			// GT_CREW). Without this the agent launches bare (no identity) — the dogfood-found
+			// gap. Written by the login user so it owns the file; bypassPermissions matches the
+			// local crew settings. `gt` resolves on the node PATH (exported above).
+			"install -d -m 700 %s/.claude\n"+
+			"cat > %s/.claude/settings.json <<'GTSETTINGS'\n"+
+			"{\n"+
+			"  \"permissions\": { \"defaultMode\": \"bypassPermissions\" },\n"+
+			"  \"hooks\": {\n"+
+			"    \"SessionStart\": [ { \"matcher\": \"\", \"hooks\": [ { \"type\": \"command\", \"command\": \"gt prime --hook\" } ] } ],\n"+
+			"    \"PreCompact\": [ { \"matcher\": \"\", \"hooks\": [ { \"type\": \"command\", \"command\": \"gt prime --hook\" } ] } ]\n"+
+			"  }\n"+
+			"}\n"+
+			"GTSETTINGS\n"+
+			"echo '[remote-spawn] installed .claude/settings.json (SessionStart: gt prime --hook)'\n"+
 			// Launch the persistent agent in a detached tmux session (bare interactive
 			// claude — -c sets cwd; survives the SSM exit; PTY keeps it a loop). Runs
 			// as the login user (the tmux + has-session + send-keys must share the same
@@ -273,6 +291,7 @@ func buildRemoteLaunchScript(node, crewName, sessionName string, launchArgv []st
 			"echo '[remote-spawn] persistent agent live + beacon sent: %s'\n",
 		remoteNodePATH, bdV52Commit, bdV52Commit,
 		cloneDir, cloneDir, provisionHint,
+		cloneDir, cloneDir, // install -d <clone>/.claude ; cat > <clone>/.claude/settings.json
 		shellJoin(launchArgv),
 		nodeTmux, sessionName,
 		nodeTmux, sessionName,

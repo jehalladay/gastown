@@ -249,6 +249,23 @@ func TestBuildRemoteLaunchScriptGuards(t *testing.T) {
 	if !strings.Contains(s, "command -v bd") || !strings.Contains(s, bdV52Commit) {
 		t.Errorf("launch lost the bd presence/v52 guards:\n%s", s)
 	}
+
+	// gap #2: the launch installs .claude/settings.json with the SessionStart prime hook
+	// into the clone, so claude runs `gt prime --hook` on startup (off-town env prime).
+	if !strings.Contains(s, remoteNodeHome+"/max/.claude/settings.json") {
+		t.Errorf("launch missing .claude/settings.json install:\n%s", s)
+	}
+	if !strings.Contains(s, "gt prime --hook") {
+		t.Errorf("launch missing the SessionStart gt prime --hook:\n%s", s)
+	}
+	if !strings.Contains(s, "SessionStart") {
+		t.Errorf("launch settings.json missing SessionStart hook key:\n%s", s)
+	}
+	// Settings must be written BEFORE the tmux launch (claude reads them at startup).
+	settingsAt := strings.Index(s, ".claude/settings.json")
+	if settingsAt < 0 || launchAt < 0 || settingsAt > launchAt {
+		t.Errorf("settings.json install must precede tmux launch (settings@%d launch@%d)", settingsAt, launchAt)
+	}
 }
 
 // TestShellQuoteJoin verifies the shell quoting that renders the systemd-run argv
