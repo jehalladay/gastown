@@ -67,6 +67,37 @@ func TestIsConflictTaskForMR(t *testing.T) {
 	}
 }
 
+// reactivecli-vtzy: the probe-auto-close guard. A RED-by-design probe (test/eval-only MR) landing
+// must NOT auto-close its source bug bead — the probe guards the bug, it does not fix it. The gate
+// closes the bead UNLESS every changed file is a test/probe path (layout-agnostic), and fails safe
+// (closes, as before) when the changed set is unknown/empty.
+func TestChangedFilesAreProbeOnly(t *testing.T) {
+	cases := []struct {
+		name    string
+		files   []string
+		want    bool // true => probe-only (leave bug bead OPEN); false => real change (close it)
+	}{
+		{"probe only", []string{"qa/probes/probe_fork_collision.py"}, true},
+		{"evals only", []string{"evals/atfile_cap.py"}, true},
+		{"tests only", []string{"tests/test_branch_commands.py"}, true},
+		{"test dir only", []string{"test/foo_test.go"}, true},
+		{"mixed probe dirs", []string{"qa/p.py", "evals/e.py", "tests/t.py"}, true},
+		{"src change closes", []string{"src/reactive_cli/branch_commands.py"}, false},
+		{"non-src-layout code closes", []string{"reactive_cli/branch_commands.py"}, false}, // pkg-rooted Python
+		{"lib-layout code closes", []string{"lib/foo.go"}, false},
+		{"repo-root code closes", []string{"main.go"}, false},
+		{"probe PLUS one code file closes", []string{"qa/probe.py", "src/fix.py"}, false}, // a real fix rides with a probe
+		{"empty set fails safe (closes)", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := changedFilesAreProbeOnly(tc.files); got != tc.want {
+				t.Fatalf("changedFilesAreProbeOnly(%v) = %v, want %v", tc.files, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestEngineerClearAgentActiveMRUsesTownBeadsDir(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses Unix shell script mock for bd")
