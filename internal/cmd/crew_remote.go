@@ -120,10 +120,11 @@ func runCrewStartRemote(crewMgr *crew.Manager, r *rig.Rig, name, node string) er
 	// 1. Open the host-initiated reverse tunnel in the background (keepalive loop).
 	//    The agent's bd/gt-mail reach the host Dolt through it (GT_DOLT_PORT=13307).
 	fmt.Printf("→ Opening reverse tunnel to %s (node:%s → host Dolt)...\n", node, remoteDoltFwdPort)
-	tunnel, err := offload.StartTunnel(scriptDir, node, remoteDoltFwdPort, tunnelKey)
+	tunnel, tunnelLog, err := offload.StartTunnel(scriptDir, node, remoteDoltFwdPort, tunnelKey)
 	if err != nil {
 		return fmt.Errorf("opening reverse tunnel: %w", err)
 	}
+	fmt.Printf("  Tunnel keepalive log: %s\n", tunnelLog)
 	// The tunnel must outlive this command (the remote agent uses it for its whole
 	// life). Release it rather than kill on return; lifecycle/keepalive is the
 	// tunnel script's job. ponytail: detach — a host-side tunnel supervisor (gt

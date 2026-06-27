@@ -49,23 +49,39 @@ func ExtractScripts() (string, error) {
 
 // StartTunnel runs the extracted open-remote-tunnel.sh for node in the BACKGROUND
 // (it's a keepalive loop that holds the reverse tunnel open) and returns the
-// started *exec.Cmd so the caller can stop it (Process.Kill) on shutdown. fwdPort
-// is the node-side forwarded port (13307). env (e.g. TUNNEL_SSH_KEY=<path>) is
-// appended to the process environment. The script's own stdout/stderr are wired
-// through so the operator sees tunnel status.
-func StartTunnel(scriptDir, node, fwdPort string, env []string) (*exec.Cmd, error) {
+// started *exec.Cmd so the caller can stop it (Process.Kill) on shutdown, and the
+// path to the tunnel's log file. fwdPort is the node-side forwarded port (13307);
+// env (e.g. TUNNEL_SSH_KEY=<path>) is appended to the process environment.
+//
+// CRITICAL: the tunnel is a LONG-LIVED keepalive loop that outlives this command.
+// Its stdout/stderr go to a LOG FILE, NOT the parent's os.Stdout — if it inherited
+// the parent stdout, releasing the process would leave the parent's stdout pipe
+// held open by the tunnel forever, so `gt crew start --remote | tail` would hang
+// with no output even after the spawn finished. (Dogfood-found: the first --remote
+// run hung exactly this way.) The operator tails the returned logPath for status.
+func StartTunnel(scriptDir, node, fwdPort string, env []string) (cmd *exec.Cmd, logPath string, err error) {
 	script := filepath.Join(scriptDir, "open-remote-tunnel.sh")
-	if _, err := os.Stat(script); err != nil {
-		return nil, fmt.Errorf("tunnel script not found at %s: %w", script, err)
+	if _, statErr := os.Stat(script); statErr != nil {
+		return nil, "", fmt.Errorf("tunnel script not found at %s: %w", script, statErr)
 	}
-	cmd := exec.Command(script, node, fwdPort)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	logf, err := os.CreateTemp("", "gt-tunnel-*.log")
+	if err != nil {
+		return nil, "", fmt.Errorf("creating tunnel log: %w", err)
+	}
+	logPath = logf.Name()
+
+	cmd = exec.Command(script, node, fwdPort)
+	cmd.Stdout = logf
+	cmd.Stderr = logf
+	cmd.Stdin = nil
 	cmd.Env = append(os.Environ(), env...)
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("starting reverse tunnel to %s: %w", node, err)
+		_ = logf.Close()
+		return nil, logPath, fmt.Errorf("starting reverse tunnel to %s: %w", node, err)
 	}
-	return cmd, nil
+	// The child holds its own fd to logf; the parent can close its copy.
+	_ = logf.Close()
+	return cmd, logPath, nil
 }
 
 // SSMRun executes nodeScript on node via the extracted ssm-run.sh (aws ssm
