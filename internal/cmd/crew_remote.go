@@ -39,6 +39,13 @@ const (
 	// timeout does not bound the agent); nohup/setsid/tmux also present as fallbacks.
 	remoteNodeUser = "ubuntu"
 	remoteNodeHome = "/opt/gastown"
+
+	// bdV52Commit is the beads build commit that carries the v52 schema (the same
+	// 7f6752c8f pinned in gt's go.mod by the bd-v52 merge + the host-installed bd).
+	// `bd version` embeds it; the spawn guard requires it on the node so a stale v49
+	// bd can't half-write the v52 town DB. The version STRING (1.0.5) is identical
+	// for v49/v52, so the commit is the reliable discriminator.
+	bdV52Commit = "7f6752c8"
 )
 
 // runCrewStartRemote spawns a crew member's agent loop on a cluster node instead
@@ -145,12 +152,22 @@ func runCrewStartRemote(crewMgr *crew.Manager, r *rig.Rig, name, node string) er
 	//    node-side version-check too; this is gt-side defense-in-depth.
 	launch := fmt.Sprintf(
 		"set -e\n"+
-			"BDV=$(bd --version 2>/dev/null || true)\n"+
+			// Export the node toolchain PATH FIRST so `bd` resolves (it's at
+			// .local/bin, not the SSM root shell's bare PATH) — the guard below + the
+			// systemd-run both need it.
+			"export PATH=%s:$PATH\n"+
+			"command -v bd >/dev/null || { echo '[remote-spawn] FATAL: bd not found on node (toolchain not staged?) — re-provision with --agent'; exit 75; }\n"+
+			"BDV=$(bd version 2>/dev/null || true)\n"+
 			"echo \"[remote-spawn] node bd: $BDV\"\n"+
-			"bd migrate status 2>/dev/null | grep -q 'v52\\|0052' || { "+
-			"echo '[remote-spawn] FATAL: node bd is not v52-schema-capable (stale v49 would half-write the v52 town DB) — re-provision with --agent v52 guard before spawning'; exit 75; }\n"+
+			// v52 guard: a stale v49 bd HALF-WRITES against the v52 town DB. The bd
+			// version STRING is still 1.0.5 for both, but `bd version` embeds the build
+			// COMMIT — the v52 build is commit 7f6752c8 (same as the town's bd-v52
+			// merge). Accept only if that commit is present. (bd migrate status needs a
+			// DB so it can't gate here; the commit is the reliable binary-identity check.)
+			"echo \"$BDV\" | grep -q '%s' || { "+
+			"echo '[remote-spawn] FATAL: node bd is not the v52 build (commit %s) — a stale v49 bd would half-write the v52 town DB; re-provision with --agent v52 guard'; exit 75; }\n"+
 			"cd %s/%s && %s\n",
-		remoteNodeHome, worker.Name, shellJoin(plan.SystemdRun))
+		remoteNodePATH, bdV52Commit, bdV52Commit, remoteNodeHome, worker.Name, shellJoin(plan.SystemdRun))
 	fmt.Printf("→ Launching agent loop on %s (session %s)...\n", node, sessionName)
 	out, err := offload.SSMRun(scriptDir, node, launch, "120")
 	if err != nil {
