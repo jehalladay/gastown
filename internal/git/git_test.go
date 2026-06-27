@@ -372,6 +372,49 @@ func TestIsRepo(t *testing.T) {
 	}
 }
 
+// TestClonePinsHTTPVersion verifies F5: every gt clone persists
+// http.version=HTTP/1.1 repo-local, so later pushes never negotiate HTTP/2
+// (which corrupts the push pack on some networks). Covers both regular and bare.
+func TestClonePinsHTTPVersion(t *testing.T) {
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "src")
+
+	if err := exec.Command("git", "init", src).Run(); err != nil {
+		t.Fatalf("init src: %v", err)
+	}
+	_ = exec.Command("git", "-C", src, "config", "user.email", "test@test.com").Run()
+	_ = exec.Command("git", "-C", src, "config", "user.name", "Test User").Run()
+	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("# Test\n"), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	_ = exec.Command("git", "-C", src, "add", ".").Run()
+	_ = exec.Command("git", "-C", src, "commit", "-m", "initial").Run()
+
+	g := NewGit(tmp)
+
+	assertHTTPVersion := func(dst string) {
+		out, err := exec.Command("git", "-C", dst, "config", "--get", "http.version").Output()
+		if err != nil {
+			t.Fatalf("reading http.version in %s: %v", dst, err)
+		}
+		if got := strings.TrimSpace(string(out)); got != HTTPVersionConfig {
+			t.Fatalf("http.version = %q, want %q", got, HTTPVersionConfig)
+		}
+	}
+
+	regular := filepath.Join(tmp, "regular")
+	if err := g.Clone(src, regular); err != nil {
+		t.Fatalf("Clone: %v", err)
+	}
+	assertHTTPVersion(regular)
+
+	bare := filepath.Join(tmp, "bare.git")
+	if err := g.CloneBare(src, bare); err != nil {
+		t.Fatalf("CloneBare: %v", err)
+	}
+	assertHTTPVersion(bare)
+}
+
 func TestCloneWithReferenceCreatesAlternates(t *testing.T) {
 	tmp := t.TempDir()
 	src := filepath.Join(tmp, "src")

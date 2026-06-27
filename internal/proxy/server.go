@@ -241,6 +241,14 @@ func (s *Server) Start(ctx context.Context) error {
 		// WriteTimeout is generous to accommodate git push/fetch streams.
 		WriteTimeout: 5 * time.Minute,
 		IdleTimeout:  2 * time.Minute,
+		// Disable HTTP/2 (F5, server side). ServeTLS otherwise auto-enables h2 on
+		// ALPN, and HTTP/2 + chunked transfer corrupts multi-MB git push packs on
+		// some networks (real packs 400 / silent "everything-up-to-date"; tiny
+		// pushes mask it). git smart-HTTP and /v1/exec are plain request/response
+		// and gain nothing from h2, so forcing HTTP/1.1 only sidesteps the bug.
+		// An empty non-nil map disables the automatic h2 upgrade. This is server-
+		// side defense-in-depth alongside the client-side http.version=HTTP/1.1.
+		TLSNextProto: map[string]func(*http.Server, *tls.Conn, http.Handler){},
 	}
 
 	// Generate a server cert from our CA for TLS, including IP SANs so that clients
