@@ -27,6 +27,17 @@ const (
 	doltBackupRetryDelay = 5 * time.Second
 )
 
+// doltBin returns the resolved absolute dolt path (PATCH-008, hq-q3dl), falling
+// back to bare "dolt" if resolution failed at startup. Using the absolute path
+// keeps the backup dog working even though it runs as a spawned molecule that
+// does not inherit the daemon's augmented PATH.
+func (d *Daemon) doltBin() string {
+	if d.doltPath != "" {
+		return d.doltPath
+	}
+	return "dolt"
+}
+
 // doltBackupInterval returns the configured backup interval, or the default (15m).
 func doltBackupInterval(config *DaemonPatrolConfig) time.Duration {
 	if config != nil && config.Patrols != nil && config.Patrols.DoltBackup != nil {
@@ -138,7 +149,7 @@ func (d *Daemon) syncBackup(dataDir, db, backupName string) error {
 		}
 
 		ctx, cancel := context.WithTimeout(parentCtx, doltBackupTimeout)
-		cmd := exec.CommandContext(ctx, "dolt", "backup", "sync", backupName)
+		cmd := exec.CommandContext(ctx, d.doltBin(), "backup", "sync", backupName)
 		cmd.Dir = dbDir
 		util.SetProcessGroup(cmd)
 
@@ -219,7 +230,7 @@ func (d *Daemon) hasBackupRemote(dataDir, db, backupName string) bool {
 	defer cancel()
 
 	dbDir := dataDir + "/" + db
-	cmd := exec.CommandContext(ctx, "dolt", "backup")
+	cmd := exec.CommandContext(ctx, d.doltBin(), "backup")
 	cmd.Dir = dbDir
 	util.SetDetachedProcessGroup(cmd)
 

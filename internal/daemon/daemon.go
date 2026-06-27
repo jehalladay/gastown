@@ -85,6 +85,10 @@ type Daemon struct {
 	// PATCH-006: Resolved binary paths to avoid PATH issues in subprocesses.
 	gtPath string
 	bdPath string
+	// PATCH-008 (hq-q3dl): Resolved dolt path for the backup dog subprocess,
+	// which does not inherit the daemon's augmented PATH. Absolute path avoids
+	// exit-127 silent backup failures.
+	doltPath string
 
 	// Boot spawn cooldown: prevents Boot from spawning on every heartbeat tick.
 	// Only accessed from heartbeat loop goroutine - no sync needed.
@@ -347,6 +351,17 @@ func New(config *Config) (*Daemon, error) {
 		bdPath = "bd"
 		logger.Printf("Warning: bd not found in PATH, subprocess calls may fail")
 	}
+	// PATCH-008 (hq-q3dl): Resolve dolt absolutely. The backup dog runs as a
+	// spawned molecule that does NOT inherit the daemon's augmented PATH, so a
+	// bare "dolt" backup call hits command-not-found (exit 127) and backups
+	// silently fail. LookPath here resolves against the daemon's already-
+	// augmented PATH (augmentDaemonPath ran above), so doltPath carries the
+	// absolute /opt/homebrew/bin/dolt into the subprocess regardless of its PATH.
+	doltPath, err := exec.LookPath("dolt")
+	if err != nil {
+		doltPath = "dolt"
+		logger.Printf("Warning: dolt not found in PATH, backup subprocess calls may fail")
+	}
 
 	// Initialize restart tracker with exponential backoff.
 	// Parameters are configurable via patrols.restart_tracker in daemon.json.
@@ -396,6 +411,7 @@ func New(config *Config) (*Daemon, error) {
 		doltServer:      doltServer,
 		gtPath:          gtPath,
 		bdPath:          bdPath,
+		doltPath:        doltPath,
 		restartTracker:  restartTracker,
 		otelProvider:    otelProvider,
 		metrics:         dm,
