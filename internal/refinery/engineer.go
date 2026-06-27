@@ -497,6 +497,16 @@ type ProcessResult struct {
 	NoOp           bool // Branch is not ahead of target (rebased to empty) — merge refused, not a failure
 }
 
+// DEAD CODE — NOT on the live refinery path (F8-inert, rc-vf94). The live
+// refinery runs the on-disk mol-refinery-patrol formula (an AI agent), not this
+// Go merge path: doMerge's only callers (ProcessBatch / ProcessMRInfo) are
+// themselves invoked only from tests. The formula already auto-rebases
+// clean-stale MRs and assigns real conflicts back, so this reproduces existing
+// live behavior but does not produce it. Kept for the (deferred) future where
+// the Go merge path goes live; until then, on_conflict is owned by the formula,
+// and gt warns (warnIfOnConflictInert) that the rig setting is a no-op. Do not
+// rely on this firing in production.
+//
 // maybeAutoRebase rebases a stale-but-clean source branch onto the target so the
 // refinery lands it instead of rejecting it as a conflict (F8 / rc-vf94 D1). It
 // implements the 3-state predicate (eng_sr2's check_rebase.sh logic):

@@ -403,6 +403,19 @@ func buildWitnessPatrolVars(ctx RoleContext) []string {
 	return vars
 }
 
+// warnIfOnConflictInert warns when a rig sets on_conflict=auto_rebase, which the
+// LIVE refinery (the mol-refinery-patrol formula) does NOT read — the Go
+// auto-rebase path (Engineer.maybeAutoRebase / doMerge) has no live callers
+// (rc-vf94 / F8-inert). The formula already auto-rebases clean-stale MRs and
+// assigns real conflicts back regardless of this setting, so auto_rebase is a
+// silent no-op. Warn loudly so it doesn't read as an active, working knob.
+// assign_back is the default and matches live behavior, so it's not warned.
+func warnIfOnConflictInert(onConflict string) {
+	if onConflict == config.OnConflictAutoRebase {
+		style.PrintWarning("merge_queue.on_conflict=%q has NO effect: the live refinery formula always auto-rebases clean-stale MRs and assigns real conflicts back (rc-vf94). Remove the setting or track the formula-side knob.", onConflict)
+	}
+}
+
 // buildRefineryPatrolVars loads rig MQ settings and returns --var key=value
 // strings for the refinery patrol formula.
 func buildRefineryPatrolVars(ctx RoleContext) []string {
@@ -430,6 +443,7 @@ func buildRefineryPatrolVars(ctx RoleContext) []string {
 	settings, sErr := config.LoadRigSettings(settingsPath)
 	if sErr == nil && settings != nil && settings.MergeQueue != nil {
 		mq := settings.MergeQueue
+		warnIfOnConflictInert(mq.OnConflict)
 		vars = append(vars, fmt.Sprintf("integration_branch_refinery_enabled=%t", mq.IsRefineryIntegrationEnabled()))
 		vars = append(vars, fmt.Sprintf("integration_branch_auto_land=%t", mq.IsIntegrationBranchAutoLandEnabled()))
 		vars = append(vars, fmt.Sprintf("run_tests=%t", mq.IsRunTestsEnabled()))
