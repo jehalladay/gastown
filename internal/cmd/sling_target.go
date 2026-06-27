@@ -25,14 +25,27 @@ func resolveTargetAgent(target string) (agentID string, pane string, hookRoot st
 		return "", "", "", err
 	}
 
-	// Convert session name to agent ID format (this doesn't require tmux)
-	agentID = sessionToAgentID(sessionName)
-
-	// Get the pane for that session
+	// Get the pane for that session. If the derived session has no live pane, the
+	// derived prefix may be wrong: PrefixFor() falls back to the default "gt" prefix
+	// when rigs.json is unavailable (e.g. a remote node has no town), so a rig-prefixed
+	// session like "rc-crew-X" gets mis-derived as "gt-crew-X" and the lookup fails —
+	// breaking re-hooks of remote crew (hq-wwxq follow-up, offload_ops). Fall back to a
+	// live tmux session that matches the same role suffix regardless of prefix.
 	pane, err = getSessionPane(sessionName)
 	if err != nil {
-		return "", "", "", fmt.Errorf("getting pane for %s: %w", sessionName, err)
+		if live, ok := liveSessionBySuffix(sessionName); ok {
+			sessionName = live
+			pane, err = getSessionPane(sessionName)
+		}
+		if err != nil {
+			return "", "", "", fmt.Errorf("getting pane for %s: %w", sessionName, err)
+		}
 	}
+
+	// Convert session name to agent ID format (this doesn't require tmux). Done AFTER
+	// the prefix-agnostic fallback so the agent ID reflects the session we actually
+	// resolved, not the mis-derived candidate.
+	agentID = sessionToAgentID(sessionName)
 
 	// Get the target's working directory for hook storage
 	t := tmux.NewTmux()

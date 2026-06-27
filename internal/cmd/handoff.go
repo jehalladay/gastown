@@ -1238,6 +1238,48 @@ func handoffRemoteSession(t *tmux.Tmux, targetSession, restartCmd string) error 
 }
 
 // getSessionPane returns the pane identifier for a session's main pane.
+// liveSessionBySuffix finds a live tmux session whose name shares the prefix-agnostic
+// role suffix of candidate. PrefixFor() falls back to the default "gt" prefix when
+// rigs.json is unavailable (a remote node has no town), so a rig-prefixed session
+// "rc-crew-X" is mis-derived as "gt-crew-X". The role suffix ("-crew-X", "-witness",
+// "-refinery", or the polecat tail) is prefix-independent, so we strip the leading
+// prefix segment and match the remainder against the live session list. Returns the
+// matched session and true if EXACTLY one live session matches (ambiguous matches are
+// rejected so we never re-hook the wrong agent).
+func liveSessionBySuffix(candidate string) (string, bool) {
+	t := tmux.NewTmux()
+	sessions, err := t.ListSessions()
+	if err != nil {
+		return "", false
+	}
+	return matchSessionBySuffix(candidate, sessions)
+}
+
+// matchSessionBySuffix is the pure matcher behind liveSessionBySuffix (no tmux): given a
+// mis-derived candidate and the live session list, return the unique session sharing the
+// prefix-agnostic role suffix. "suffix" = everything after the first "-" (the prefix
+// segment): "gt-crew-eng_tools" -> "crew-eng_tools", "gt-witness" -> "witness". Matches
+// "<anyprefix>-<suffix>". Returns ("", false) on zero or AMBIGUOUS (>1) matches so we
+// never re-hook the wrong agent.
+func matchSessionBySuffix(candidate string, sessions []string) (string, bool) {
+	dash := strings.IndexByte(candidate, '-')
+	if dash < 0 || dash+1 >= len(candidate) {
+		return "", false
+	}
+	suffix := candidate[dash+1:]
+
+	var matches []string
+	for _, s := range sessions {
+		if d := strings.IndexByte(s, '-'); d >= 0 && s[d+1:] == suffix {
+			matches = append(matches, s)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], true
+	}
+	return "", false
+}
+
 func getSessionPane(sessionName string) (string, error) {
 	// Get the pane ID for the first pane in the session
 	out, err := tmux.BuildCommand("list-panes", "-t", sessionName, "-F", "#{pane_id}").Output()
