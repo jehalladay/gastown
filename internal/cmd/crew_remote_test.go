@@ -128,9 +128,10 @@ func TestBuildRemoteSpawnPlan(t *testing.T) {
 	if got := strings.Join(plan.Tunnel, " "); got != "/tmp/scripts/open-remote-tunnel.sh i-0abc 13307" {
 		t.Errorf("Tunnel = %q", got)
 	}
-	// Detached tmux session (persistent PTY), cwd = node crew clone, env via -e.
+	// Detached tmux session as ubuntu (persistent PTY), cwd = node crew clone, env via -e.
 	lc := strings.Join(plan.Launch, " ")
 	for _, want := range []string{
+		"sudo -u ubuntu env PATH=" + remoteNodePATH,
 		"tmux new-session -d -s rc-crew-max -c " + remoteNodeHome + "/max",
 		"-e GT_DOLT_HOST=127.0.0.1",
 		"-e GT_DOLT_PORT=13307",

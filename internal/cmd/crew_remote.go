@@ -150,6 +150,10 @@ func runCrewStartRemote(crewMgr *crew.Manager, r *rig.Rig, name, node string) er
 	//    when --agent skipped replacing a pre-existing v49 bd). Fail loud here rather
 	//    than let the agent's first bd corrupt a bead. offload_ops' --agent adds a
 	//    node-side version-check too; this is gt-side defense-in-depth.
+	// tmux invoked as the node login user (matches plan.Launch's new-session user),
+	// so has-session/send-keys hit the SAME tmux server (/tmp/tmux-<uid>).
+	nodeTmux := "sudo -u " + remoteNodeUser + " env PATH=" + remoteNodePATH + ":/usr/bin:/bin HOME=" + remoteNodeHome + " tmux"
+
 	launch := fmt.Sprintf(
 		"set -e\n"+
 			// Export the node toolchain PATH FIRST so `bd` resolves (it's at
@@ -167,20 +171,25 @@ func runCrewStartRemote(crewMgr *crew.Manager, r *rig.Rig, name, node string) er
 			"echo \"$BDV\" | grep -q '%s' || { "+
 			"echo '[remote-spawn] FATAL: node bd is not the v52 build (commit %s) — a stale v49 bd would half-write the v52 town DB; re-provision with --agent v52 guard'; exit 75; }\n"+
 			// Launch the persistent agent in a detached tmux session (bare interactive
-			// claude — -c sets cwd; survives the SSM exit; PTY keeps it a loop).
+			// claude — -c sets cwd; survives the SSM exit; PTY keeps it a loop). Runs
+			// as ubuntu (the tmux + has-session + send-keys must share the same user's
+			// tmux server, /tmp/tmux-1000).
 			"%s\n"+
-			"tmux has-session -t %s 2>/dev/null || { echo '[remote-spawn] FATAL: agent tmux session did not start'; exit 76; }\n"+
+			"%s has-session -t %s 2>/dev/null || { echo '[remote-spawn] FATAL: agent tmux session did not start (claude exited?)'; exit 76; }\n"+
 			// Let claude's REPL come up, then type the startup beacon (the "start"
 			// nudge) into the live pane — mirrors local crew (interactive claude +
 			// beacon sent via send-keys). claude with a prompt ARG would one-shot+exit.
 			"sleep 8\n"+
-			"tmux send-keys -t %s -l %s\n"+
-			"tmux send-keys -t %s Enter\n"+
-			"echo '[remote-spawn] tmux session live + beacon sent: %s'\n",
+			"%s has-session -t %s 2>/dev/null || { echo '[remote-spawn] FATAL: agent exited within 8s (not persistent)'; exit 77; }\n"+
+			"%s send-keys -t %s -l %s\n"+
+			"%s send-keys -t %s Enter\n"+
+			"echo '[remote-spawn] persistent agent live + beacon sent: %s'\n",
 		remoteNodePATH, bdV52Commit, bdV52Commit,
-		shellJoin(plan.Launch), sessionName,
-		sessionName, shellQuote(remoteAgentBeacon(r.Name, worker.Name)),
-		sessionName, sessionName)
+		shellJoin(plan.Launch),
+		nodeTmux, sessionName,
+		nodeTmux, sessionName,
+		nodeTmux, sessionName, shellQuote(remoteAgentBeacon(r.Name, worker.Name)),
+		nodeTmux, sessionName, sessionName)
 	fmt.Printf("→ Launching persistent agent (tmux) on %s (session %s)...\n", node, sessionName)
 	out, err := offload.SSMRun(scriptDir, node, launch, "120")
 	if err != nil {
@@ -334,7 +343,14 @@ func buildRemoteSpawnPlan(node, crewName, scriptDir string, env map[string]strin
 		env["HOME"] = remoteNodeHome
 	}
 
-	tmux := []string{"tmux", "new-session", "-d", "-s", sessionName, "-c", cwd}
+	// Run tmux AS THE NODE LOGIN USER (ubuntu), not root: the SSM shell is root,
+	// but claude refuses --dangerously-skip-permissions under root, and ubuntu owns
+	// the toolchain + tmux server (/tmp/tmux-1000). sudo -u ubuntu, preserving the
+	// node PATH + HOME so tmux + the pane's claude resolve. (Probe-verified this
+	// exact form keeps claude alive.)
+	tmux := []string{"sudo", "-u", remoteNodeUser,
+		"env", "PATH=" + remoteNodePATH + ":/usr/bin:/bin", "HOME=" + remoteNodeHome,
+		"tmux", "new-session", "-d", "-s", sessionName, "-c", cwd}
 	for _, kv := range remoteEnvAssignments(env) {
 		tmux = append(tmux, "-e", kv)
 	}
