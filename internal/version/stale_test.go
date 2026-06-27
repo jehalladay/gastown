@@ -462,3 +462,45 @@ func TestStaleBinaryInfo_Describe(t *testing.T) {
 		})
 	}
 }
+
+// TestGetRepoRoot_SourceRepoOverride verifies the GT_SOURCE_REPO env override
+// (hq-jpij.11): an explicit, valid gt source path is honored over discovery, and
+// an invalid override falls through rather than wrongly returning.
+func TestGetRepoRoot_SourceRepoOverride(t *testing.T) {
+	// Build a temp dir that looks like a gt source tree (has cmd/gt/main.go).
+	src := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(src, "cmd", "gt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "cmd", "gt", "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("valid override is honored", func(t *testing.T) {
+		// Neutralize discovery paths so the override is what's exercised.
+		t.Setenv("GT_ROOT", "/nonexistent")
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("GT_SOURCE_REPO", src)
+		got, err := GetRepoRoot()
+		if err != nil {
+			t.Fatalf("GetRepoRoot with valid GT_SOURCE_REPO errored: %v", err)
+		}
+		if got != src {
+			t.Errorf("GetRepoRoot = %q, want override %q", got, src)
+		}
+	})
+
+	t.Run("invalid override falls through (not returned)", func(t *testing.T) {
+		t.Setenv("GT_SOURCE_REPO", filepath.Join(t.TempDir(), "no-gt-source-here"))
+		t.Setenv("GT_ROOT", "/nonexistent")
+		t.Setenv("HOME", t.TempDir())
+		// cwd isn't a gt source in the test sandbox either, so this should error
+		// rather than return the bogus override.
+		if got, err := GetRepoRoot(); err == nil && got != "" {
+			// Only fail if it returned the bogus override specifically.
+			if strings.Contains(got, "no-gt-source-here") {
+				t.Errorf("invalid GT_SOURCE_REPO should not be returned, got %q", got)
+			}
+		}
+	})
+}
