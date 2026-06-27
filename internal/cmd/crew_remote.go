@@ -5,11 +5,14 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/crew"
+	"github.com/steveyegge/gastown/internal/offload"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/session"
+	"github.com/steveyegge/gastown/internal/style"
 )
 
 // Reverse-tunnel contract (F2 Tier-1), locked with eng_sr2 + grounded in
@@ -103,24 +106,78 @@ func runCrewStartRemote(crewMgr *crew.Manager, r *rig.Rig, name, node string) er
 			"auto-detect the reactivecli crew-dir key)", node)
 	}
 
-	// Assemble the concrete spawn plan (gt-owned half): the provision/tunnel/
-	// systemd-run commands that drive offload_ops'/eng_sr2's proven scripts. The
-	// embed/extract of those scripts (scriptDir) + execution land at the F2<->F4
-	// internal/offload reconcile + the joint live wiring (e2e already GREEN). The
-	// unit suffix is the session name (stable + unique per crew) since a wallclock
-	// timestamp isn't available here.
-	plan := buildRemoteSpawnPlan(node, worker.Name, "<extracted-script-dir>", env, startupCmd, sessionName)
-	_ = plan // executed by the orchestration step (extract scripts -> run plan)
+	// Extract the embedded script suite (open-remote-tunnel.sh + ssm-run.sh) to a
+	// tempdir and drive it — the scripts are the source of truth for the ssh-R/SSM
+	// mechanics; gt computes identity/env + orchestrates.
+	scriptDir, err := offload.ExtractScripts()
+	if err != nil {
+		return fmt.Errorf("extracting remote-spawn scripts: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(scriptDir) }()
 
-	return fmt.Errorf(
-		"gt crew start --remote: gt-side ready for %s/%s (session %s) on node %s "+
-			"[user=%s home=%s, %d env vars incl %s=%s %s=%s; spawn plan assembled: "+
-			"provision --agent -> tunnel(bg, TUNNEL_SSH_KEY set) -> systemd-run --scope] — "+
-			"e2e proven green; orchestration execution lands at the F2<->F4 internal/offload "+
-			"reconcile + the joint live wiring with offload_ops",
-		r.Name, worker.Name, sessionName, node,
-		remoteNodeUser, remoteNodeHome, len(env),
-		"GT_DOLT_HOST", env["GT_DOLT_HOST"], "GT_DOLT_PORT", env["GT_DOLT_PORT"])
+	plan := buildRemoteSpawnPlan(node, worker.Name, scriptDir, env, startupCmd, sessionName)
+
+	// 1. Open the host-initiated reverse tunnel in the background (keepalive loop).
+	//    The agent's bd/gt-mail reach the host Dolt through it (GT_DOLT_PORT=13307).
+	fmt.Printf("→ Opening reverse tunnel to %s (node:%s → host Dolt)...\n", node, remoteDoltFwdPort)
+	tunnel, err := offload.StartTunnel(scriptDir, node, remoteDoltFwdPort, tunnelKey)
+	if err != nil {
+		return fmt.Errorf("opening reverse tunnel: %w", err)
+	}
+	// The tunnel must outlive this command (the remote agent uses it for its whole
+	// life). Release it rather than kill on return; lifecycle/keepalive is the
+	// tunnel script's job. ponytail: detach — a host-side tunnel supervisor (gt
+	// daemon) owning these is the upgrade path if we need to reap them.
+	if tunnel.Process != nil {
+		_ = tunnel.Process.Release()
+	}
+
+	// 2. Launch the agent loop on the node via SSM (systemd-run --scope, survives
+	//    the send-command exit). The crew clone is at /opt/gastown/<crew> (staged by
+	//    provision --agent --crew); run the scope from there.
+	launch := fmt.Sprintf("cd %s/%s && %s\n",
+		remoteNodeHome, worker.Name, shellJoin(plan.SystemdRun))
+	fmt.Printf("→ Launching agent loop on %s (session %s)...\n", node, sessionName)
+	out, err := offload.SSMRun(scriptDir, node, launch, "120")
+	if err != nil {
+		return fmt.Errorf("launching remote agent on %s: %w\n%s", node, err, out)
+	}
+
+	fmt.Printf("%s Remote crew agent %s/%s launched on %s (session %s)\n",
+		style.Bold.Render("✓"), r.Name, worker.Name, node, sessionName)
+	fmt.Printf("  Dolt via tunnel: %s:%s | HOME: %s/%s\n",
+		env["GT_DOLT_HOST"], env["GT_DOLT_PORT"], remoteNodeHome, worker.Name)
+	if strings.TrimSpace(out) != "" {
+		fmt.Printf("  Node output:\n%s\n", indentLines(out, "    "))
+	}
+	return nil
+}
+
+// shellJoin renders argv as a single shell-safe command line (each arg quoted).
+func shellJoin(argv []string) string {
+	quoted := make([]string, len(argv))
+	for i, a := range argv {
+		quoted[i] = shellQuote(a)
+	}
+	return strings.Join(quoted, " ")
+}
+
+// shellQuote single-quotes a shell argument (POSIX: wrap in '...', escaping any
+// embedded single quote as '\''). Safe for the startup command + --setenv values.
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// indentLines prefixes each line of s with prefix (for readable node output).
+func indentLines(s, prefix string) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	for i, l := range lines {
+		lines[i] = prefix + l
+	}
+	return strings.Join(lines, "\n")
 }
 
 // remoteAgentDoltEnv returns the Dolt-connection env a remotely-spawned agent must

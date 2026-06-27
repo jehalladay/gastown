@@ -1,0 +1,101 @@
+// Package offload embeds the remote-spawn script suite and drives it so
+// gt crew start --remote can run host-independently (the scripts are the source
+// of truth for the ssh-R/SSM mechanics; this package extracts + executes them,
+// it does not reimplement them). See scripts/VENDORED.md.
+package offload
+
+import (
+	"embed"
+	"fmt"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
+)
+
+//go:embed scripts/*.sh
+var scriptsFS embed.FS
+
+// ExtractScripts writes the embedded *.sh to a fresh tempdir (executable) and
+// returns the dir. The remote-spawn scripts reference each other via $HERE, so
+// they must all land together. Caller removes the dir when done.
+func ExtractScripts() (string, error) {
+	dir, err := os.MkdirTemp("", "gt-remote-*")
+	if err != nil {
+		return "", fmt.Errorf("creating temp dir: %w", err)
+	}
+	entries, err := fs.ReadDir(scriptsFS, "scripts")
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return "", fmt.Errorf("reading embedded scripts: %w", err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".sh" {
+			continue
+		}
+		content, err := scriptsFS.ReadFile("scripts/" + e.Name())
+		if err != nil {
+			_ = os.RemoveAll(dir)
+			return "", fmt.Errorf("reading embedded %s: %w", e.Name(), err)
+		}
+		// 0755: the scripts exec each other + are invoked directly.
+		if err := os.WriteFile(filepath.Join(dir, e.Name()), content, 0755); err != nil {
+			_ = os.RemoveAll(dir)
+			return "", fmt.Errorf("writing %s: %w", e.Name(), err)
+		}
+	}
+	return dir, nil
+}
+
+// StartTunnel runs the extracted open-remote-tunnel.sh for node in the BACKGROUND
+// (it's a keepalive loop that holds the reverse tunnel open) and returns the
+// started *exec.Cmd so the caller can stop it (Process.Kill) on shutdown. fwdPort
+// is the node-side forwarded port (13307). env (e.g. TUNNEL_SSH_KEY=<path>) is
+// appended to the process environment. The script's own stdout/stderr are wired
+// through so the operator sees tunnel status.
+func StartTunnel(scriptDir, node, fwdPort string, env []string) (*exec.Cmd, error) {
+	script := filepath.Join(scriptDir, "open-remote-tunnel.sh")
+	if _, err := os.Stat(script); err != nil {
+		return nil, fmt.Errorf("tunnel script not found at %s: %w", script, err)
+	}
+	cmd := exec.Command(script, node, fwdPort)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = append(os.Environ(), env...)
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("starting reverse tunnel to %s: %w", node, err)
+	}
+	return cmd, nil
+}
+
+// SSMRun executes nodeScript on node via the extracted ssm-run.sh (aws ssm
+// send-command + poll). Used to launch the agent loop (the systemd-run line) on
+// the node. timeoutSecs bounds the SSM command (the launched scope outlives it —
+// systemd-run --scope survives the send-command exit). Returns the combined
+// output; a non-zero ssm-run exit (the node command failed) is an error.
+func SSMRun(scriptDir, node, nodeScript, timeoutSecs string) (string, error) {
+	ssmRun := filepath.Join(scriptDir, "ssm-run.sh")
+	if _, err := os.Stat(ssmRun); err != nil {
+		return "", fmt.Errorf("ssm-run.sh not found at %s: %w", ssmRun, err)
+	}
+	// ssm-run.sh takes <instance-id> <script-file> [timeout]; write the node
+	// command to a temp file it reads via jq --rawfile.
+	f, err := os.CreateTemp("", "gt-remote-launch-*.sh")
+	if err != nil {
+		return "", fmt.Errorf("creating launch script: %w", err)
+	}
+	defer func() { _ = os.Remove(f.Name()) }()
+	if _, err := f.WriteString(nodeScript); err != nil {
+		_ = f.Close()
+		return "", fmt.Errorf("writing launch script: %w", err)
+	}
+	_ = f.Close()
+
+	cmd := exec.Command(ssmRun, node, f.Name(), timeoutSecs)
+	cmd.Env = os.Environ()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("ssm-run on %s failed: %w", node, err)
+	}
+	return string(out), nil
+}

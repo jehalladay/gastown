@@ -123,3 +123,28 @@ func TestBuildRemoteSpawnPlan(t *testing.T) {
 		t.Errorf("startup command not the final arg: %v", plan.SystemdRun)
 	}
 }
+
+// TestShellQuoteJoin verifies the shell quoting that renders the systemd-run argv
+// into the SSM-delivered command line. Env values + the startup command pass
+// through it, so a value with spaces/quotes must not break out of its argument.
+func TestShellQuoteJoin(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"", "''"},
+		{"plain", "'plain'"},
+		{"with space", "'with space'"},
+		{"GT_ROLE=crew", "'GT_ROLE=crew'"},
+		{"it's", `'it'\''s'`}, // embedded single quote escaped
+	}
+	for _, c := range cases {
+		if got := shellQuote(c.in); got != c.want {
+			t.Errorf("shellQuote(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+
+	// shellJoin quotes each arg; an injection-y value stays contained in one arg.
+	got := shellJoin([]string{"sh", "-lc", "echo hi; rm -rf /"})
+	want := `'sh' '-lc' 'echo hi; rm -rf /'`
+	if got != want {
+		t.Errorf("shellJoin = %q, want %q", got, want)
+	}
+}
