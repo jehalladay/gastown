@@ -8,6 +8,31 @@
 
 set -euo pipefail
 
+# --- Portable timeout --------------------------------------------------------
+# macOS has no GNU `timeout` (it's coreutils); a bare `timeout ...` exits 127
+# there, which silently breaks the timed push once the Phase-2 hub is live.
+# Prefer GNU timeout / gtimeout when present; otherwise fall back to a perl
+# watchdog. Exit 124 on timeout to match GNU timeout's convention so callers'
+# rc==124 checks keep working. Usage: gt_timeout <secs> <cmd> [args...]
+gt_timeout() {
+  local secs="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$secs" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$secs" "$@"
+  else
+    perl -e '
+      my $s = shift;
+      my $pid = fork();
+      if ($pid == 0) { exec @ARGV or exit 127; }
+      local $SIG{ALRM} = sub { kill "TERM", $pid; sleep 2; kill "KILL", $pid; exit 124; };
+      alarm $s;
+      waitpid($pid, 0);
+      exit($? >> 8);
+    ' "$secs" "$@"
+  fi
+}
+
 # --- Configuration -----------------------------------------------------------
 
 DOLT_HOST="${DOLT_HOST:-127.0.0.1}"
@@ -198,7 +223,7 @@ if ! $SKIP_DOLT_PUSH; then
     cd "$DB_DIR"
 
     for REMOTE_NAME in $(dolt remote -v 2>/dev/null | awk '{print $1}' | sort -u || true); do
-      if timeout 120 dolt push "$REMOTE_NAME" main 2>/dev/null; then
+      if gt_timeout 120 dolt push "$REMOTE_NAME" main 2>/dev/null; then
         log "    $REMOTE_NAME: pushed"
         DOLT_PUSHED=$((DOLT_PUSHED + 1))
       else
