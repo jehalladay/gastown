@@ -157,44 +157,7 @@ func runCrewStartRemote(crewMgr *crew.Manager, r *rig.Rig, name, node string) er
 	//    node-side version-check too; this is gt-side defense-in-depth.
 	// tmux invoked as the node login user (matches plan.Launch's new-session user),
 	// so has-session/send-keys hit the SAME tmux server (/tmp/tmux-<uid>).
-	nodeTmux := "sudo -u " + resolveRemoteNodeUser() + " env PATH=" + remoteNodePATH + ":/usr/bin:/bin HOME=" + remoteNodeHome + " tmux"
-
-	launch := fmt.Sprintf(
-		"set -e\n"+
-			// Export the node toolchain PATH FIRST so `bd` resolves (it's at
-			// .local/bin, not the SSM root shell's bare PATH) — the guard below + the
-			// systemd-run both need it.
-			"export PATH=%s:$PATH\n"+
-			"command -v bd >/dev/null || { echo '[remote-spawn] FATAL: bd not found on node (toolchain not staged?) — re-provision with --agent'; exit 75; }\n"+
-			"BDV=$(bd version 2>/dev/null || true)\n"+
-			"echo \"[remote-spawn] node bd: $BDV\"\n"+
-			// v52 guard: a stale v49 bd HALF-WRITES against the v52 town DB. The bd
-			// version STRING is still 1.0.5 for both, but `bd version` embeds the build
-			// COMMIT — the v52 build is commit 7f6752c8 (same as the town's bd-v52
-			// merge). Accept only if that commit is present. (bd migrate status needs a
-			// DB so it can't gate here; the commit is the reliable binary-identity check.)
-			"echo \"$BDV\" | grep -q '%s' || { "+
-			"echo '[remote-spawn] FATAL: node bd is not the v52 build (commit %s) — a stale v49 bd would half-write the v52 town DB; re-provision with --agent v52 guard'; exit 75; }\n"+
-			// Launch the persistent agent in a detached tmux session (bare interactive
-			// claude — -c sets cwd; survives the SSM exit; PTY keeps it a loop). Runs
-			// as the login user (the tmux + has-session + send-keys must share the same
-			// user's tmux server, /tmp/tmux-<uid>).
-			"%s\n"+
-			"%s has-session -t %s 2>/dev/null || { echo '[remote-spawn] FATAL: agent tmux session did not start (claude exited?)'; exit 76; }\n"+
-			// Let claude's REPL come up, then type the startup beacon (the "start"
-			// nudge) into the live pane — mirrors local crew (interactive claude +
-			// beacon sent via send-keys). claude with a prompt ARG would one-shot+exit.
-			"sleep 8\n"+
-			"%s has-session -t %s 2>/dev/null || { echo '[remote-spawn] FATAL: agent exited within 8s (not persistent)'; exit 77; }\n"+
-			"%s send-keys -t %s -l %s\n"+
-			"%s send-keys -t %s Enter\n"+
-			"echo '[remote-spawn] persistent agent live + beacon sent: %s'\n",
-		remoteNodePATH, bdV52Commit, bdV52Commit,
-		shellJoin(plan.Launch),
-		nodeTmux, sessionName,
-		nodeTmux, sessionName,
-		nodeTmux, sessionName, shellQuote(remoteAgentBeacon(r.Name, worker.Name)),
-		nodeTmux, sessionName, sessionName)
+	launch := buildRemoteLaunchScript(node, worker.Name, sessionName, plan.Launch, remoteAgentBeacon(r.Name, worker.Name))
 	fmt.Printf("→ Launching persistent agent (tmux) on %s (session %s)...\n", node, sessionName)
 	out, err := offload.SSMRun(scriptDir, node, launch, "120")
 	if err != nil {
@@ -215,6 +178,68 @@ func runCrewStartRemote(crewMgr *crew.Manager, r *rig.Rig, name, node string) er
 		fmt.Printf("  Node output:\n%s\n", indentLines(out, "    "))
 	}
 	return nil
+}
+
+// buildRemoteLaunchScript builds the SSM-delivered bash that runs on the node to stand
+// up the persistent agent. Pure (no exec) so the guards are unit-testable. It asserts,
+// in order: bd present, bd is the v52 build, and the crew clone exists WITH .beads —
+// each fails loud (distinct exit code) rather than launching a broken agent. Then it
+// starts the detached tmux session (launchArgv) as the node login user and types the
+// startup beacon into the live REPL.
+func buildRemoteLaunchScript(node, crewName, sessionName string, launchArgv []string, beacon string) string {
+	nodeTmux := "sudo -u " + resolveRemoteNodeUser() + " env PATH=" + remoteNodePATH + ":/usr/bin:/bin HOME=" + remoteNodeHome + " tmux"
+
+	// The agent's cwd MUST be its provisioned crew clone (with .beads), or bd from the
+	// agent's cwd fails "no beads database found" and claude has no identity/CLAUDE.md —
+	// exactly the dogfood failure (hq-wwxq gaps #1+#2): claude launched bare in $HOME with
+	// no clone. The clone is staged by offload_ops' `provision-node.sh --agent --crew
+	// <name>` (their lane, not vendored). gt does not own that script, so it asserts the
+	// clone is present and FAILS LOUD with the exact provision command if not — same
+	// defense-in-depth shape as the bd guard.
+	cloneDir := remoteNodeHome + "/" + crewName
+	provisionHint := fmt.Sprintf("provision-node.sh --agent --crew %s %s", crewName, node)
+
+	return fmt.Sprintf(
+		"set -e\n"+
+			// Export the node toolchain PATH FIRST so `bd` resolves (it's at
+			// .local/bin, not the SSM root shell's bare PATH) — the guard below + the
+			// systemd-run both need it.
+			"export PATH=%s:$PATH\n"+
+			"command -v bd >/dev/null || { echo '[remote-spawn] FATAL: bd not found on node (toolchain not staged?) — re-provision with --agent'; exit 75; }\n"+
+			"BDV=$(bd version 2>/dev/null || true)\n"+
+			"echo \"[remote-spawn] node bd: $BDV\"\n"+
+			// v52 guard: a stale v49 bd HALF-WRITES against the v52 town DB. The bd
+			// version STRING is still 1.0.5 for both, but `bd version` embeds the build
+			// COMMIT — the v52 build is commit 7f6752c8 (same as the town's bd-v52
+			// merge). Accept only if that commit is present. (bd migrate status needs a
+			// DB so it can't gate here; the commit is the reliable binary-identity check.)
+			"echo \"$BDV\" | grep -q '%s' || { "+
+			"echo '[remote-spawn] FATAL: node bd is not the v52 build (commit %s) — a stale v49 bd would half-write the v52 town DB; re-provision with --agent v52 guard'; exit 75; }\n"+
+			// Crew-clone guard (gap #1/#2): the agent cwd must be a provisioned clone WITH
+			// .beads, else bd has no DB + claude has no identity. Fail loud with the exact
+			// provision command rather than launch a rootless, identity-less REPL.
+			"test -d %s/.beads || { echo '[remote-spawn] FATAL: crew clone %s missing or has no .beads — the node is not provisioned for this crew. Run: %s'; exit 78; }\n"+
+			// Launch the persistent agent in a detached tmux session (bare interactive
+			// claude — -c sets cwd; survives the SSM exit; PTY keeps it a loop). Runs
+			// as the login user (the tmux + has-session + send-keys must share the same
+			// user's tmux server, /tmp/tmux-<uid>).
+			"%s\n"+
+			"%s has-session -t %s 2>/dev/null || { echo '[remote-spawn] FATAL: agent tmux session did not start (claude exited?)'; exit 76; }\n"+
+			// Let claude's REPL come up, then type the startup beacon (the "start"
+			// nudge) into the live pane — mirrors local crew (interactive claude +
+			// beacon sent via send-keys). claude with a prompt ARG would one-shot+exit.
+			"sleep 8\n"+
+			"%s has-session -t %s 2>/dev/null || { echo '[remote-spawn] FATAL: agent exited within 8s (not persistent)'; exit 77; }\n"+
+			"%s send-keys -t %s -l %s\n"+
+			"%s send-keys -t %s Enter\n"+
+			"echo '[remote-spawn] persistent agent live + beacon sent: %s'\n",
+		remoteNodePATH, bdV52Commit, bdV52Commit,
+		cloneDir, cloneDir, provisionHint,
+		shellJoin(launchArgv),
+		nodeTmux, sessionName,
+		nodeTmux, sessionName,
+		nodeTmux, sessionName, shellQuote(beacon),
+		nodeTmux, sessionName, sessionName)
 }
 
 // shellJoin renders argv as a single shell-safe command line (each arg quoted).

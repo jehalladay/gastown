@@ -217,6 +217,40 @@ func TestBuildRemoteSpawnPlan(t *testing.T) {
 	}
 }
 
+// TestBuildRemoteLaunchScriptGuards locks the node-side preflight guards: the launch
+// must assert the crew clone exists WITH .beads BEFORE starting the agent (dogfood gap
+// #1/#2 — claude launched bare in $HOME with no clone/identity), and on failure emit the
+// exact provision command. Without this guard the verb stands up a rootless, DB-less,
+// identity-less REPL that looks alive but can do no bd/mail work.
+func TestBuildRemoteLaunchScriptGuards(t *testing.T) {
+	argv := []string{"sudo", "-u", "ubuntu", "tmux", "new-session", "-d", "-s", "rc-crew-max"}
+	s := buildRemoteLaunchScript("i-0abc", "max", "rc-crew-max", argv, "BEACON")
+
+	// Clone guard present, keyed on the node crew-clone .beads dir.
+	if !strings.Contains(s, "test -d "+remoteNodeHome+"/max/.beads") {
+		t.Errorf("launch missing crew-clone/.beads guard:\n%s", s)
+	}
+	// Distinct exit code so a missing clone is diagnosable separately from bd/tmux fails.
+	if !strings.Contains(s, "exit 78") {
+		t.Errorf("clone guard should fail with exit 78:\n%s", s)
+	}
+	// The error must name the exact provision command (offload_ops' lane) so the operator
+	// can fix it without spelunking.
+	if !strings.Contains(s, "provision-node.sh --agent --crew max i-0abc") {
+		t.Errorf("clone-guard failure must include the provision command:\n%s", s)
+	}
+	// The clone guard must run BEFORE the tmux launch (fail before standing up a broken REPL).
+	guardAt := strings.Index(s, "/max/.beads")
+	launchAt := strings.Index(s, "new-session")
+	if guardAt < 0 || launchAt < 0 || guardAt > launchAt {
+		t.Errorf("clone guard must precede tmux launch (guard@%d launch@%d)", guardAt, launchAt)
+	}
+	// Existing guards still present.
+	if !strings.Contains(s, "command -v bd") || !strings.Contains(s, bdV52Commit) {
+		t.Errorf("launch lost the bd presence/v52 guards:\n%s", s)
+	}
+}
+
 // TestShellQuoteJoin verifies the shell quoting that renders the systemd-run argv
 // into the SSM-delivered command line. Env values + the startup command pass
 // through it, so a value with spaces/quotes must not break out of its argument.
