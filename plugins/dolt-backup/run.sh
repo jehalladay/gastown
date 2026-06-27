@@ -9,6 +9,31 @@
 
 set -euo pipefail
 
+# --- Portable timeout --------------------------------------------------------
+# macOS has no GNU `timeout` (it's coreutils); a bare `timeout ...` exits 127
+# there, recording a false FAILED (or, post-Phase-2, breaking the timed sync).
+# Prefer GNU timeout / gtimeout when present; otherwise fall back to a perl
+# watchdog. Exit 124 on timeout to match GNU timeout's convention so the
+# rc==124 TIMEOUT branch below keeps working. Usage: gt_timeout <secs> <cmd>...
+gt_timeout() {
+  local secs="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$secs" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$secs" "$@"
+  else
+    perl -e '
+      my $s = shift;
+      my $pid = fork();
+      if ($pid == 0) { exec @ARGV or exit 127; }
+      local $SIG{ALRM} = sub { kill "TERM", $pid; sleep 2; kill "KILL", $pid; exit 124; };
+      alarm $s;
+      waitpid($pid, 0);
+      exit($? >> 8);
+    ' "$secs" "$@"
+  fi
+}
+
 # --- Configuration -----------------------------------------------------------
 
 # Honor GT_TOWN_ROOT first (set by daemon when invoking plugins). The
@@ -152,7 +177,7 @@ for DB in "${PROD_DBS[@]}"; do
   # (PIPESTATUS reflects the `true`), recording failed syncs as successful
   # and writing hash markers for backups that never happened.
   SYNC_RC=0
-  SYNC_OUTPUT=$(cd "$DB_DIR" && timeout "$BACKUP_TIMEOUT" dolt backup sync "$BACKUP_NAME" 2>&1) || SYNC_RC=$?
+  SYNC_OUTPUT=$(cd "$DB_DIR" && gt_timeout "$BACKUP_TIMEOUT" dolt backup sync "$BACKUP_NAME" 2>&1) || SYNC_RC=$?
   SYNC_ELAPSED=$(( $(date +%s) - SYNC_START ))
 
   if [[ $SYNC_RC -eq 0 ]]; then
