@@ -213,6 +213,13 @@ func AgentEnv(cfg AgentEnvConfig) map[string]string {
 	if effort == "" {
 		effort = "high"
 	}
+	// rc-dci (owner directive): when force_max_effort is set town-wide, force
+	// every agent to "max". Applied AFTER ResolveRoleEffort so it overrides any
+	// rig/town role_effort and GT_COST_TIER preset — it cannot be silently
+	// downgraded. Default-off (field absent / false) preserves the resolved value.
+	if ForceMaxEffort(cfg.TownRoot) {
+		effort = "max"
+	}
 	env["CLAUDE_CODE_EFFORT_LEVEL"] = effort
 
 	// Clear CLAUDECODE to prevent nested session detection in Claude Code v2.x.

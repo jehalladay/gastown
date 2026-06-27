@@ -98,6 +98,14 @@ type TownSettings struct {
 	// Managed by cost-tier presets alongside RoleAgents.
 	RoleEffort map[string]string `json:"role_effort,omitempty"`
 
+	// ForceMaxEffort, when true, forces EVERY agent town-wide to launch at "max"
+	// reasoning effort, overriding any rig/town role_effort and GT_COST_TIER preset
+	// (the override is applied after effort resolution in AgentEnv, so it cannot be
+	// silently downgraded). Owner directive (rc-dci). Default false preserves the
+	// existing per-role behavior; set true in <town>/settings/config.json to activate.
+	// The cost/latency increase across all agents is accepted by the owner when enabled.
+	ForceMaxEffort bool `json:"force_max_effort,omitempty"`
+
 	// CostTier tracks which cost tier preset was applied (informational).
 	// Actual model assignments live in RoleAgents and Agents.
 	// Values: "standard", "economy", "budget", or empty for custom configs.

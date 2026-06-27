@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1332,6 +1333,71 @@ func TestAgentEnv_EffortLevel(t *testing.T) {
 		})
 		if _, ok := env["CLAUDE_CODE_EFFORT_LEVEL"]; !ok {
 			t.Error("CLAUDE_CODE_EFFORT_LEVEL should always be set")
+		}
+	})
+}
+
+// writeForceMaxTown writes a town settings/config.json with force_max_effort and
+// optional role_effort, returning the town root. rc-dci.
+func writeForceMaxTown(t *testing.T, forceMax bool, roleEffort map[string]string) string {
+	t.Helper()
+	townRoot := t.TempDir()
+	settingsDir := filepath.Join(townRoot, "settings")
+	if err := os.MkdirAll(settingsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settings := map[string]interface{}{
+		"type":             "town-settings",
+		"version":          1,
+		"force_max_effort": forceMax,
+	}
+	if roleEffort != nil {
+		settings["role_effort"] = roleEffort
+	}
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(settingsDir, "config.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return townRoot
+}
+
+// TestAgentEnv_ForceMaxEffort is the rc-dci owner directive: when town
+// force_max_effort is true, EVERY agent launches at "max" reasoning effort,
+// un-overridable by rig/town role_effort or GT_COST_TIER. Off by default.
+func TestAgentEnv_ForceMaxEffort(t *testing.T) {
+	allRoles := []string{"mayor", "deacon", "witness", "refinery", "polecat", "crew", "boot", "dog"}
+
+	t.Run("forces max for every role", func(t *testing.T) {
+		t.Setenv("CLAUDE_CODE_EFFORT_LEVEL", "")
+		townRoot := writeForceMaxTown(t, true, nil)
+		for _, role := range allRoles {
+			env := AgentEnv(AgentEnvConfig{Role: role, TownRoot: townRoot})
+			if got := env["CLAUDE_CODE_EFFORT_LEVEL"]; got != "max" {
+				t.Errorf("role %q: CLAUDE_CODE_EFFORT_LEVEL = %q, want %q", role, got, "max")
+			}
+		}
+	})
+
+	t.Run("override beats role_effort and cost tier", func(t *testing.T) {
+		t.Setenv("CLAUDE_CODE_EFFORT_LEVEL", "")
+		t.Setenv("GT_COST_TIER", "budget") // tier presets resolve low/medium
+		// town role_effort explicitly sets crew=low; force-max must still win.
+		townRoot := writeForceMaxTown(t, true, map[string]string{"crew": "low"})
+		env := AgentEnv(AgentEnvConfig{Role: "crew", TownRoot: townRoot})
+		if got := env["CLAUDE_CODE_EFFORT_LEVEL"]; got != "max" {
+			t.Errorf("force-max must beat role_effort+cost_tier: got %q, want %q", got, "max")
+		}
+	})
+
+	t.Run("off by default preserves high", func(t *testing.T) {
+		t.Setenv("CLAUDE_CODE_EFFORT_LEVEL", "")
+		townRoot := writeForceMaxTown(t, false, nil)
+		env := AgentEnv(AgentEnvConfig{Role: "crew", TownRoot: townRoot})
+		if got := env["CLAUDE_CODE_EFFORT_LEVEL"]; got != "high" {
+			t.Errorf("force_max_effort=false must preserve default: got %q, want %q", got, "high")
 		}
 	})
 }

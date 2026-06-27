@@ -1472,6 +1472,22 @@ func ResolveRoleEffort(role, townRoot, rigPath string) string {
 	return "" // Caller uses env var fallback, then "high" default
 }
 
+// ForceMaxEffort reports whether the town has force_max_effort enabled (rc-dci
+// owner directive). When true, AgentEnv forces every agent's effort to "max"
+// AFTER ResolveRoleEffort, so it beats rig/town role_effort and any GT_COST_TIER
+// preset and cannot be silently downgraded. Defaults to false (missing/unreadable
+// settings, or the field absent) so existing per-role behavior is preserved.
+func ForceMaxEffort(townRoot string) bool {
+	if townRoot == "" {
+		return false
+	}
+	townSettings, err := LoadOrCreateTownSettings(TownSettingsPath(townRoot))
+	if err != nil || townSettings == nil {
+		return false
+	}
+	return townSettings.ForceMaxEffort
+}
+
 // IsResolvedAgentClaude returns true if the RuntimeConfig represents a Claude agent.
 // Exported for use in witness/daemon code that needs to skip hardcoded
 // Claude start commands when a non-Claude agent is configured.
