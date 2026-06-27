@@ -73,6 +73,42 @@ func TestRemoteAgentEnv(t *testing.T) {
 	}
 }
 
+// TestResolveRemoteNodeUser verifies the node login user defaults to ubuntu but is
+// overridable via GT_REMOTE_USER — the fleet is MIXED (offload_ops' wave nodes are
+// ec2-user AMIs; the L8 dogfood node was ubuntu), so a hardcoded user fails
+// `sudo -u ubuntu` with "unknown user ubuntu" on the ec2-user nodes. offload_ops
+// sets GT_REMOTE_USER per node from the node's login_user marker.
+func TestResolveRemoteNodeUser(t *testing.T) {
+	t.Run("unset -> ubuntu default", func(t *testing.T) {
+		t.Setenv("GT_REMOTE_USER", "")
+		if got := resolveRemoteNodeUser(); got != "ubuntu" {
+			t.Errorf("resolveRemoteNodeUser() = %q, want ubuntu (default)", got)
+		}
+	})
+	t.Run("set -> override (ec2-user wave nodes)", func(t *testing.T) {
+		t.Setenv("GT_REMOTE_USER", "ec2-user")
+		if got := resolveRemoteNodeUser(); got != "ec2-user" {
+			t.Errorf("resolveRemoteNodeUser() = %q, want ec2-user", got)
+		}
+	})
+}
+
+// TestBuildRemoteSpawnPlanHonorsRemoteUser locks that the launch line targets the
+// resolved user — the `sudo -u <user>` must be ec2-user when GT_REMOTE_USER says so,
+// else the wave nodes fail "sudo: unknown user ubuntu".
+func TestBuildRemoteSpawnPlanHonorsRemoteUser(t *testing.T) {
+	t.Setenv("GT_REMOTE_USER", "ec2-user")
+	plan := buildRemoteSpawnPlan("i-0abc", "max", "/tmp/scripts",
+		map[string]string{"GT_RIG": "reactivecli"}, "claude --foo beacon", "rc-crew-max")
+	lc := strings.Join(plan.Launch, " ")
+	if !strings.Contains(lc, "sudo -u ec2-user") {
+		t.Errorf("Launch must target ec2-user when GT_REMOTE_USER=ec2-user: %s", lc)
+	}
+	if strings.Contains(lc, "sudo -u ubuntu") {
+		t.Errorf("Launch must not hardcode ubuntu when overridden: %s", lc)
+	}
+}
+
 // TestTunnelKeyEnv verifies gt maps GT_TUNNEL_KEY -> TUNNEL_SSH_KEY (which the
 // vendored open-remote-tunnel.sh honors as priority #1, avoiding the fragile 60s
 // ephemeral key), and returns nil when unset so the caller fails loud.

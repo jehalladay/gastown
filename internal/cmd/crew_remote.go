@@ -32,13 +32,18 @@ const (
 	// local Dolt instead of the tunneled host. 13307 guarantees -> the -R forward -> host 3307.
 
 	// Node launch contract (confirmed live by offload_ops --agent on the warm nodes):
-	// login user is ubuntu (no ec2-user; root SSH forced-command-blocked); the agent
-	// toolchain (gt linux/amd64 + claude + bd) and the crew HOME/clone are staged under
-	// /opt/gastown, runnable by root via SSM. The agent loop is launched with
-	// `systemd-run --scope` (verified to survive the SSM run-command exit — the SSM
-	// timeout does not bound the agent); nohup/setsid/tmux also present as fallbacks.
-	remoteNodeUser = "ubuntu"
-	remoteNodeHome = "/opt/gastown"
+	// the agent toolchain (gt linux/amd64 + claude + bd) and the crew HOME/clone are
+	// staged under /opt/gastown, runnable by root via SSM. The agent loop is launched
+	// with `systemd-run --scope` (verified to survive the SSM run-command exit — the
+	// SSM timeout does not bound the agent); nohup/setsid/tmux also present as fallbacks.
+	//
+	// The LOGIN USER varies across the fleet (Ubuntu AMIs = ubuntu, Amazon Linux =
+	// ec2-user), so it is NOT a fixed const — resolveRemoteNodeUser() reads
+	// GT_REMOTE_USER (offload_ops sets it per node from the node's login_user marker)
+	// and defaults to ubuntu. A hardcoded user fails `sudo -u ubuntu` -> "unknown user
+	// ubuntu" on the ec2-user wave nodes (dogfood-found at first wave spawn).
+	remoteNodeUserDefault = "ubuntu"
+	remoteNodeHome        = "/opt/gastown"
 
 	// bdV52Commit is the beads build commit that carries the v52 schema (the same
 	// 7f6752c8f pinned in gt's go.mod by the bd-v52 merge + the host-installed bd).
@@ -152,7 +157,7 @@ func runCrewStartRemote(crewMgr *crew.Manager, r *rig.Rig, name, node string) er
 	//    node-side version-check too; this is gt-side defense-in-depth.
 	// tmux invoked as the node login user (matches plan.Launch's new-session user),
 	// so has-session/send-keys hit the SAME tmux server (/tmp/tmux-<uid>).
-	nodeTmux := "sudo -u " + remoteNodeUser + " env PATH=" + remoteNodePATH + ":/usr/bin:/bin HOME=" + remoteNodeHome + " tmux"
+	nodeTmux := "sudo -u " + resolveRemoteNodeUser() + " env PATH=" + remoteNodePATH + ":/usr/bin:/bin HOME=" + remoteNodeHome + " tmux"
 
 	launch := fmt.Sprintf(
 		"set -e\n"+
@@ -172,8 +177,8 @@ func runCrewStartRemote(crewMgr *crew.Manager, r *rig.Rig, name, node string) er
 			"echo '[remote-spawn] FATAL: node bd is not the v52 build (commit %s) — a stale v49 bd would half-write the v52 town DB; re-provision with --agent v52 guard'; exit 75; }\n"+
 			// Launch the persistent agent in a detached tmux session (bare interactive
 			// claude — -c sets cwd; survives the SSM exit; PTY keeps it a loop). Runs
-			// as ubuntu (the tmux + has-session + send-keys must share the same user's
-			// tmux server, /tmp/tmux-1000).
+			// as the login user (the tmux + has-session + send-keys must share the same
+			// user's tmux server, /tmp/tmux-<uid>).
 			"%s\n"+
 			"%s has-session -t %s 2>/dev/null || { echo '[remote-spawn] FATAL: agent tmux session did not start (claude exited?)'; exit 76; }\n"+
 			// Let claude's REPL come up, then type the startup beacon (the "start"
@@ -357,12 +362,13 @@ func buildRemoteSpawnPlan(node, crewName, scriptDir string, env map[string]strin
 		env["HOME"] = remoteNodeHome
 	}
 
-	// Run tmux AS THE NODE LOGIN USER (ubuntu), not root: the SSM shell is root,
-	// but claude refuses --dangerously-skip-permissions under root, and ubuntu owns
-	// the toolchain + tmux server (/tmp/tmux-1000). sudo -u ubuntu, preserving the
-	// node PATH + HOME so tmux + the pane's claude resolve. (Probe-verified this
-	// exact form keeps claude alive.)
-	tmux := []string{"sudo", "-u", remoteNodeUser,
+	// Run tmux AS THE NODE LOGIN USER (resolveRemoteNodeUser — ubuntu or ec2-user
+	// depending on the AMI), not root: the SSM shell is root, but claude refuses
+	// --dangerously-skip-permissions under root, and the login user owns the toolchain
+	// + tmux server (/tmp/tmux-<uid>). sudo -u <user>, preserving the node PATH + HOME
+	// so tmux + the pane's claude resolve. (Probe-verified this exact form keeps claude
+	// alive.)
+	tmux := []string{"sudo", "-u", resolveRemoteNodeUser(),
 		"env", "PATH=" + remoteNodePATH + ":/usr/bin:/bin", "HOME=" + remoteNodeHome,
 		"tmux", "new-session", "-d", "-s", sessionName, "-c", cwd}
 	for _, kv := range remoteEnvAssignments(env) {
@@ -404,6 +410,16 @@ func tunnelKeyEnv() []string {
 		return []string{"TUNNEL_SSH_KEY=" + k}
 	}
 	return nil
+}
+
+// resolveRemoteNodeUser returns the node login user the spawn runs `sudo -u` as.
+// Defaults to ubuntu but is overridable via GT_REMOTE_USER for Amazon-Linux nodes
+// (ec2-user) — the fleet is mixed, so a hardcoded user fails on the other AMI.
+func resolveRemoteNodeUser() string {
+	if u := os.Getenv("GT_REMOTE_USER"); u != "" {
+		return u
+	}
+	return remoteNodeUserDefault
 }
 
 // remoteEnvAssignments renders env as deterministically-ordered KEY=VALUE strings
