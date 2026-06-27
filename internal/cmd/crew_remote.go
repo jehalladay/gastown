@@ -107,15 +107,30 @@ func runCrewStartRemote(crewMgr *crew.Manager, r *rig.Rig, name, node string) er
 	}
 	_ = startupCmd // consumed by the orchestration step (joint live wiring with offload_ops)
 
+	// GT_SKIP_TUNNEL=1: the verb does NOT open its own reverse tunnel — an external
+	// persistent per-node tunnel already provides the data plane. At scale the verb's
+	// per-spawn tunnel is redundant AND harmful: every spawn on a node adds another
+	// keepalive loop racing the same node:13307 (ExitOnForwardFailure lets only one bind;
+	// the rest spin on failed binds = SSM-connect churn — offload_ops saw 44 redundant
+	// tunnels + host load 15.8 after 32 migrations). When offload_ops' batch model owns
+	// the durable per-node tunnel, skip ours (hq-wisp-zlzb7q, option b). Default (unset)
+	// keeps the self-tunnel — the single-spawn path the L8 proved.
+	skipTunnel := os.Getenv("GT_SKIP_TUNNEL") == "1"
+
 	// The reverse tunnel needs the persistent key passed explicitly on an
 	// embedded-extract host (the vendored script's hardcoded key-paths don't
 	// resolve from a tempdir → it would fall to the fragile ephemeral key). Fail
-	// loud now rather than let the tunnel silently use the TTL-racing path.
-	tunnelKey := tunnelKeyEnv()
-	if tunnelKey == nil {
-		return fmt.Errorf("gt crew start --remote: set GT_TUNNEL_KEY to the persistent offload-tunnel key path "+
-			"(staged on this host by offload_ops); the reverse tunnel to %s needs it (embedded-extract can't "+
-			"auto-detect the reactivecli crew-dir key)", node)
+	// loud now rather than let the tunnel silently use the TTL-racing path. Only
+	// required when WE open the tunnel — skip the check under GT_SKIP_TUNNEL.
+	var tunnelKey []string
+	if !skipTunnel {
+		tunnelKey = tunnelKeyEnv()
+		if tunnelKey == nil {
+			return fmt.Errorf("gt crew start --remote: set GT_TUNNEL_KEY to the persistent offload-tunnel key path "+
+				"(staged on this host by offload_ops); the reverse tunnel to %s needs it (embedded-extract can't "+
+				"auto-detect the reactivecli crew-dir key). Or set GT_SKIP_TUNNEL=1 if an external per-node "+
+				"tunnel already provides the data plane", node)
+		}
 	}
 
 	// Extract the embedded script suite (open-remote-tunnel.sh + ssm-run.sh) to a
@@ -147,18 +162,25 @@ func runCrewStartRemote(crewMgr *crew.Manager, r *rig.Rig, name, node string) er
 
 	// 1. Open the host-initiated reverse tunnel in the background (keepalive loop).
 	//    The agent's bd/gt-mail reach the host Dolt through it (GT_DOLT_PORT=13307).
-	fmt.Printf("→ Opening reverse tunnel to %s (node:%s → host Dolt)...\n", node, remoteDoltFwdPort)
-	tunnel, tunnelLog, err := offload.StartTunnel(scriptDir, node, remoteDoltFwdPort, tunnelKey)
-	if err != nil {
-		return fmt.Errorf("opening reverse tunnel: %w", err)
-	}
-	fmt.Printf("  Tunnel keepalive log: %s\n", tunnelLog)
-	// The tunnel must outlive this command (the remote agent uses it for its whole
-	// life). Release it rather than kill on return; lifecycle/keepalive is the
-	// tunnel script's job. ponytail: detach — a host-side tunnel supervisor (gt
-	// daemon) owning these is the upgrade path if we need to reap them.
-	if tunnel.Process != nil {
-		_ = tunnel.Process.Release()
+	//    Skipped under GT_SKIP_TUNNEL=1 — an external persistent per-node tunnel owns
+	//    the data plane; opening ours would race its :13307 bind (see skipTunnel above).
+	if skipTunnel {
+		fmt.Printf("→ Skipping verb tunnel (GT_SKIP_TUNNEL=1) — relying on an external "+
+			"persistent tunnel for node:%s → host Dolt\n", remoteDoltFwdPort)
+	} else {
+		fmt.Printf("→ Opening reverse tunnel to %s (node:%s → host Dolt)...\n", node, remoteDoltFwdPort)
+		tunnel, tunnelLog, terr := offload.StartTunnel(scriptDir, node, remoteDoltFwdPort, tunnelKey)
+		if terr != nil {
+			return fmt.Errorf("opening reverse tunnel: %w", terr)
+		}
+		fmt.Printf("  Tunnel keepalive log: %s\n", tunnelLog)
+		// The tunnel must outlive this command (the remote agent uses it for its whole
+		// life). Release it rather than kill on return; lifecycle/keepalive is the
+		// tunnel script's job. ponytail: detach — a host-side tunnel supervisor (gt
+		// daemon) owning these is the upgrade path if we need to reap them.
+		if tunnel.Process != nil {
+			_ = tunnel.Process.Release()
+		}
 	}
 
 	// 2. Launch the agent loop on the node via SSM (systemd-run --scope, survives

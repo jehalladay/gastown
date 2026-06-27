@@ -403,7 +403,7 @@ func init() {
 	crewStartCmd.Flags().StringVar(&crewAgentOverride, "agent", "", "Agent alias to run crew worker with (overrides rig/town default)")
 	crewStartCmd.Flags().StringVar(&crewResume, "resume", "", "Resume a previous session (optionally specify session ID)")
 	crewStartCmd.Flags().Lookup("resume").NoOptDefVal = "last"
-	crewStartCmd.Flags().StringVar(&crewRemoteNode, "remote", "", "Spawn the agent loop on a cluster node (instance ID) instead of locally (F2: off-box memory relief). Env: GT_TUNNEL_KEY (required, tunnel key path), GT_REMOTE_USER (node login user; default ubuntu, set ec2-user for Amazon Linux AMIs)")
+	crewStartCmd.Flags().StringVar(&crewRemoteNode, "remote", "", "Spawn the agent loop on a cluster node (instance ID) instead of locally (F2: off-box memory relief). Env: GT_TUNNEL_KEY (tunnel key path; required unless GT_SKIP_TUNNEL=1), GT_REMOTE_USER (node login user; default ubuntu, set ec2-user for Amazon Linux AMIs), GT_SKIP_TUNNEL=1 (don't open a per-spawn tunnel; rely on an external persistent per-node tunnel for the data plane)")
 
 	crewStopCmd.Flags().StringVar(&crewRig, "rig", "", "Rig to use (filter when using --all)")
 	crewStopCmd.Flags().BoolVar(&crewAll, "all", false, "Stop all running crew sessions")
