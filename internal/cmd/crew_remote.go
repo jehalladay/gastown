@@ -245,26 +245,27 @@ func remoteAgentEnv(rigName, crewName, rigPath, sessionName string) map[string]s
 	return env
 }
 
-// remoteAgentStartupCommand builds the agent startup command (claude + Gas Town
-// flags + the startup beacon) the node launches under systemd-run — identical to
-// the local crew start command, so a remote agent boots with the same context/
-// hooks. Pure + testable; the node runs it as user `ubuntu` with HOME /opt/gastown.
+// remoteAgentStartupCommand builds the agent startup command the NODE launches.
+//
+// It deliberately does NOT reuse gt's local BuildStartupCommand* — that resolves
+// the agent binary to the HOST's absolute path (e.g. /Users/.../​.toolbox/bin/claude,
+// which doesn't exist on the node -> exec status 127) and prepends an `env KEY=VAL`
+// block carrying the HOST base env (which double-set GT_DOLT_PORT=3307, defeating
+// the tunnel overlay). Both were dogfood-found bugs. Instead this emits a
+// node-resolvable command: bare `claude` (found via the node toolchain PATH the
+// launch exports) + the Gas Town flags + the startup beacon. Env comes ONLY from
+// the systemd --setenv list (which carries the 13307 tunnel overlay) — no embedded
+// env prefix. --dangerously-skip-permissions matches a local crew start; settings/
+// hooks resolve from the node's own crew clone cwd.
 func remoteAgentStartupCommand(rigName, crewName, rigPath, sessionName string) (string, error) {
-	townRoot := filepath.Dir(rigPath)
 	beacon := session.FormatStartupBeacon(session.BeaconConfig{
 		Recipient: session.BeaconRecipient("crew", crewName, rigName),
 		Sender:    "human",
 		Topic:     "start",
 	})
-	return config.BuildStartupCommandFromConfig(config.AgentEnvConfig{
-		Role:        "crew",
-		Rig:         rigName,
-		AgentName:   crewName,
-		TownRoot:    townRoot,
-		Prompt:      beacon,
-		Topic:       "start",
-		SessionName: sessionName,
-	}, rigPath, beacon, "")
+	// bare `claude` (PATH-resolved on the node), skip-permissions like local crew,
+	// beacon as the startup prompt. shellQuote the beacon (it has spaces/brackets).
+	return "claude --dangerously-skip-permissions " + shellQuote(beacon), nil
 }
 
 // remoteSpawnPlan is the concrete, reviewable set of commands gt drives to spawn a

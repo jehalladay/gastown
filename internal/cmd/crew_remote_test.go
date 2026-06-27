@@ -82,6 +82,34 @@ func TestTunnelKeyEnv(t *testing.T) {
 	})
 }
 
+// TestRemoteAgentStartupCommandIsNodeSafe locks the two dogfood-found bugs: the
+// remote startup must use a BARE agent name (PATH-resolved on the node), NOT the
+// host's absolute claude path, and must carry NO embedded `env KEY=VAL` prefix
+// (env comes from systemd --setenv, which has the 13307 tunnel overlay; a host
+// env prefix re-set GT_DOLT_PORT=3307 and defeated the tunnel).
+func TestRemoteAgentStartupCommandIsNodeSafe(t *testing.T) {
+	cmd, err := remoteAgentStartupCommand("reactivecli", "research_bench", "/town/reactivecli", "rc-crew-research_bench")
+	if err != nil {
+		t.Fatalf("remoteAgentStartupCommand: %v", err)
+	}
+	if !strings.HasPrefix(cmd, "claude ") {
+		t.Errorf("startup must start with bare `claude`, got: %q", cmd)
+	}
+	// No host absolute path (the exec-127 bug).
+	for _, hostPath := range []string{"/Users/", "/.toolbox/", "/opt/homebrew/"} {
+		if strings.Contains(cmd, hostPath) {
+			t.Errorf("startup must not embed a host path %q: %q", hostPath, cmd)
+		}
+	}
+	// No embedded env prefix (the GT_DOLT_PORT=3307 double-set bug); env is via --setenv.
+	if strings.HasPrefix(cmd, "env ") || strings.Contains(cmd, "GT_DOLT_PORT=") {
+		t.Errorf("startup must not embed an env prefix (env comes from --setenv): %q", cmd)
+	}
+	if !strings.Contains(cmd, "--dangerously-skip-permissions") {
+		t.Errorf("startup should match local crew (skip-permissions): %q", cmd)
+	}
+}
+
 // TestBuildRemoteSpawnPlan locks the spawn-command assembly against offload_ops'
 // verified shapes: provision --agent, tunnel on the fwd port, and the systemd-run
 // --scope line carrying the agent env as --setenv flags + the startup command.
