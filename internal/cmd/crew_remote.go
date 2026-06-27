@@ -296,17 +296,19 @@ func remoteAgentDoltEnv() map[string]string {
 // orchestration that ships this env to the node (open-remote-tunnel.sh bg + an SSM
 // systemd-run send-command) is wired against offload_ops'/eng_sr2's proven scripts.
 func remoteAgentEnv(rigName, crewName, rigPath, sessionName string) map[string]string {
-	// GT_ROOT must be the NODE crew-clone path, NOT the host town root (filepath.Dir(
-	// rigPath) = /Users/.../gt, which does not exist on the node — dogfood gap #4). The
-	// node clone is /opt/gastown/<crew> (provision-node.sh --crew stages it WITH .beads);
-	// it's the same path buildRemoteSpawnPlan uses as the agent's cwd. AgentEnv sets both
-	// GT_ROOT and GIT_CEILING_DIRECTORIES from this, so both land node-correct.
-	nodeRoot := remoteNodeHome + "/" + crewName
+	// GT_ROOT is left UNSET (TownRoot=""): the dogfood (gap #4) found GT_ROOT=/Users/.../gt
+	// — the HOST town root — baked into the node session, a path that does not exist there
+	// and misroutes. offload_ops' live-proven remote-crew path (13+ runs) sets NO GT_ROOT:
+	// gt resolves identity from the agent's cwd (the /opt/gastown/<crew> clone, set by
+	// buildRemoteSpawnPlan) + GT_CREW. Passing TownRoot="" makes AgentEnv omit both GT_ROOT
+	// and GIT_CEILING_DIRECTORIES — and on the node the clone's parent (/opt/gastown) is not
+	// a git repo, so there's no umbrella-walk to ceiling against. rigPath is intentionally
+	// unused: its host-derived town root is exactly the wrong value here.
+	_ = rigPath
 	env := config.AgentEnv(config.AgentEnvConfig{
 		Role:        "crew",
 		Rig:         rigName,
 		AgentName:   crewName,
-		TownRoot:    nodeRoot,
 		SessionName: sessionName,
 	})
 	// Overlay the reverse-tunnel Dolt endpoint (must win over any local default).

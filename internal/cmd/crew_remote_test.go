@@ -54,20 +54,20 @@ func TestRemoteAgentEnv(t *testing.T) {
 			env["GT_DOLT_HOST"], env["GT_DOLT_PORT"])
 	}
 
-	// GT_ROOT (+ GIT_CEILING_DIRECTORIES) MUST be the NODE crew-clone path, NOT the host
-	// town root — the dogfood (hq-wwxq gap #4) found GT_ROOT=/Users/.../gt baked into the
-	// node session, a host path that doesn't exist there. The node crew clone provision
-	// stages (with .beads) is /opt/gastown/<crew>; that is the only root that resolves on
-	// the node. A host path makes bd/gt walk a nonexistent tree.
-	wantRoot := "/opt/gastown/gastown_eng_lead"
-	if env["GT_ROOT"] != wantRoot {
-		t.Errorf("GT_ROOT = %q, want node crew-clone path %q (NOT the host town root)", env["GT_ROOT"], wantRoot)
+	// GT_ROOT MUST be UNSET — the dogfood (hq-wwxq gap #4) found GT_ROOT=/Users/.../gt (the
+	// HOST town root) baked into the node session, a path that doesn't exist there and
+	// misroutes. offload_ops' live-proven remote-crew path sets NO GT_ROOT: gt resolves
+	// from the agent cwd (/opt/gastown/<crew> clone) + GT_CREW. A set GT_ROOT here is a
+	// regression toward the host-path bug, so assert it (and GIT_CEILING_DIRECTORIES) absent.
+	if v, ok := env["GT_ROOT"]; ok {
+		t.Errorf("GT_ROOT = %q, want UNSET (resolves from cwd+GT_CREW on the node; a value is the host-path bug)", v)
 	}
-	if env["GIT_CEILING_DIRECTORIES"] != wantRoot {
-		t.Errorf("GIT_CEILING_DIRECTORIES = %q, want %q", env["GIT_CEILING_DIRECTORIES"], wantRoot)
+	if v, ok := env["GIT_CEILING_DIRECTORIES"]; ok {
+		t.Errorf("GIT_CEILING_DIRECTORIES = %q, want UNSET (derived from town root, which we don't set)", v)
 	}
-	if strings.HasPrefix(env["GT_ROOT"], "/town") || strings.HasPrefix(env["GT_ROOT"], "/Users") {
-		t.Errorf("GT_ROOT %q is a host path — must be the node crew-clone path", env["GT_ROOT"])
+	// GT_CREW is the identity anchor the node path relies on instead of GT_ROOT.
+	if env["GT_CREW"] != "gastown_eng_lead" {
+		t.Errorf("GT_CREW = %q, want gastown_eng_lead (the cwd+GT_CREW resolution anchor)", env["GT_CREW"])
 	}
 
 	// remoteEnvAssignments renders sorted KEY=VALUE; spot-check it includes the overlay.
