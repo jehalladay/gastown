@@ -263,20 +263,30 @@ type remoteSpawnPlan struct {
 	TunnelEnv  []string // env for the tunnel command (TUNNEL_SSH_KEY=<GT_TUNNEL_KEY>)
 }
 
+// remoteNodePATH is prepended so the agent resolves its staged toolchain: claude
+// lives under .npm-global/bin, gt+bd under .local/bin, node under node/bin — none
+// on the bare PATH (offload_ops verified; without it `claude` won't resolve).
+const remoteNodePATH = remoteNodeHome + "/.local/bin:" + remoteNodeHome + "/node/bin:" + remoteNodeHome + "/.npm-global/bin"
+
 // buildRemoteSpawnPlan assembles the spawn commands for crewName on node, against
-// offload_ops' verified step-4 systemd-run shape:
+// offload_ops' verified step-4 form — a transient systemd SERVICE (not --scope):
 //
-//	sudo systemd-run --scope --unit=gt-crew-<crew>-<unit> \
-//	  --setenv=KEY=VALUE... sh -lc '<startupCmd>'
+//	sudo systemd-run --unit=gt-crew-<crew>-<unit> --property=Restart=on-failure \
+//	  --setenv=KEY=VALUE... sh -lc 'export PATH=...; <startupCmd>'
 //
-// unitSuffix makes the unit name stable+unique (caller passes a timestamp/id;
-// Date.now is unavailable here so it's injected). The agent env (incl HOME and the
-// tunnel Dolt overlay) becomes --setenv flags; startupCmd is the local-parity boot.
+// --unit (service) over --scope: a long-lived crew agent needs crash-restart
+// (Restart=on-failure) + a clean `systemctl stop gt-crew-<crew>` kill handle;
+// --scope has neither and dies on reboot. unitSuffix makes the unit stable+unique
+// (injected — Date.now is unavailable here). The agent env (incl HOME + the tunnel
+// Dolt overlay) becomes --setenv flags; the startup runs under sh -lc with the node
+// toolchain PATH exported first.
 func buildRemoteSpawnPlan(node, crewName, scriptDir string, env map[string]string, startupCmd, unitSuffix string) remoteSpawnPlan {
 	tunnelScript := filepath.Join(scriptDir, "open-remote-tunnel.sh")
 	provisionScript := filepath.Join(scriptDir, "provision-node.sh")
 
-	systemd := []string{"sudo", "systemd-run", "--scope", "--unit=gt-crew-" + crewName + "-" + unitSuffix}
+	systemd := []string{"sudo", "systemd-run",
+		"--unit=gt-crew-" + crewName + "-" + unitSuffix,
+		"--property=Restart=on-failure"}
 	// HOME is the node's staged toolchain root; ensure it's set even if env omits it.
 	if _, ok := env["HOME"]; !ok {
 		systemd = append(systemd, "--setenv=HOME="+remoteNodeHome)
@@ -284,7 +294,8 @@ func buildRemoteSpawnPlan(node, crewName, scriptDir string, env map[string]strin
 	for _, kv := range remoteEnvAssignments(env) {
 		systemd = append(systemd, "--setenv="+kv)
 	}
-	systemd = append(systemd, "sh", "-lc", startupCmd)
+	// Export the node toolchain PATH inside the launched shell so `claude` resolves.
+	systemd = append(systemd, "sh", "-lc", "export PATH="+remoteNodePATH+":$PATH; "+startupCmd)
 
 	return remoteSpawnPlan{
 		Provision:  []string{provisionScript, "--agent", node},
