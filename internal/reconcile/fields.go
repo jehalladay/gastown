@@ -48,6 +48,17 @@ var fieldPolicy = map[string]policy{
 	"metadata": deepMergeJSON,
 	// updated_at itself is the clock — winner's value carried with the LWW fields
 	"updated_at": lww,
+	// §2 completeness (live `describe issues` = 55 cols; first inspection truncated at 38). The rest
+	// move with the row's mutable state — none are landed/identity — so LWW, except is_blocked (sticky).
+	"is_blocked": orFlag,
+	// scheduling / activity timestamps
+	"due_at": lww, "defer_until": lww, "started_at": lww, "last_activity": lww,
+	// wisp/agent-coordination + convoy/mol machinery
+	"actor": lww, "target": lww, "payload": lww, "await_type": lww, "timeout_ns": lww,
+	"waiters": lww, "hook_bead": lww, "role_bead": lww, "agent_state": lww, "role_type": lww, "rig": lww,
+	// descriptive / provenance
+	"external_ref": lww, "spec_id": lww, "source_system": lww, "source_repo": lww,
+	"sender": lww, "wisp_type": lww, "event_kind": lww, "estimated_minutes": lww,
 }
 
 // Resolution is one auto-resolved (or flagged) field, for the gt town sync report. Silent resolution is
