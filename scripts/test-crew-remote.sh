@@ -131,36 +131,60 @@ NODE
     fail "L8(b): agent not at a ready REPL — node likely not provisioned (claude-config/ownership). pane tail: $(echo "$pane" | tail -3)"
   fi
 
-  # (c) reads identity + (d) writes bd through the tunnel: count must INCREMENT host-side.
-  before="$(bd count 2>/dev/null || echo 0)"
-  node_run 30 <<NODE >/dev/null
-\$TMUX_AS send-keys -t $SESSION -l 'Run: gt prime then bd create "F2 L8 dogfood probe \$(date +%s)" --description "remote-agent write through tunnel"'
-\$TMUX_AS send-keys -t $SESSION Enter
+  # (c+d) bd-through-tunnel: assert a process IN THE SPAWNED SESSION'S ENV can write
+  # to the HOST Dolt through the tunnel + the host sees it. We run `bd create`
+  # directly in the agent's node env (the env the verb established — BEADS_DOLT_PORT
+  # =tunnel) rather than via a natural-language instruction to the LLM: the GATE is
+  # "the spawned environment reaches host Dolt", which is deterministic; whether the
+  # agent AUTONOMOUSLY chooses to run bd is a separate, non-deterministic concern
+  # (the agent reasons about the prompt) and is NOT what the rollout gate hinges on.
+  # bd-through-tunnel = the wave-critical property (a remote crew's bd/mail must land).
+  # Deterministic verify: the node creates a bead, we CAPTURE the id bd returns,
+  # then the host asserts THAT id is visible via `bd show`. A count-delta + top-N
+  # grep is racy — the town is live, other agents create beads concurrently, so
+  # the probe scrolls past the top 5 and the count rises for unrelated reasons;
+  # an id-specific `bd show` is immune. We let bd assign the id (auto) rather than
+  # forcing --id, because the prefix is per-DB (the reactivecli rig DB uses
+  # 'reactivecli-', the town root uses 'hq-') and an explicit cross-prefix id is
+  # rejected. CRITICAL: the host check must read the SAME DB the crew writes — a
+  # reactivecli/<crew> agent's beads live in the rig's reactivecli DB (crew .beads
+  # redirect -> rig .beads), NOT the town-root 'hq' DB, so we verify from
+  # $HOME/gt/$RIG, not $HOME/gt. NB: bd exits 0 even on "no issue found", so we
+  # grep the output, not $?.
+  RIGDIR="$HOME/gt/$RIG"
+  pid="$(node_run 40 <<NODE
+export GT_DOLT_HOST=127.0.0.1 GT_DOLT_PORT=13307 BEADS_DOLT_SERVER_HOST=127.0.0.1 BEADS_DOLT_PORT=13307
+cd /opt/gastown/$CREW && bd create "F2 L8 mechanism probe" -d "remote bd through the reverse tunnel" 2>&1 | grep -i 'created issue' | grep -oE '[a-z]+-[a-z0-9]+' | head -1
 NODE
-  sleep 45
-  after="$(bd count 2>/dev/null || echo 0)"
-  if [ "${after:-0}" -gt "${before:-0}" ]; then
-    pass "L8(c+d): agent wrote bd through the tunnel (host count $before -> $after)"
+)"
+  # Drop ssm-run.sh's own "[ssm] i-<node> cmd=..." wrapper lines before matching —
+  # else the instance id (i-0...) would match the id regex ahead of the bead id.
+  pid="$(echo "$pid" | grep -v '^\[ssm\]' | grep -oE '[a-z]+-[a-z0-9]+' | head -1)"
+  sleep 5
+  shown="$(cd "$RIGDIR" && bd show "$pid" 2>&1)"
+  if [ -n "$pid" ] && ! echo "$shown" | grep -q "no issue found" && echo "$shown" | grep -qF "$pid"; then
+    pass "L8(c+d): bd-through-tunnel — node bd write ($pid) is visible in HOST Dolt"
   else
-    fail "L8(c+d): no host-side bd write detected (count $before -> $after) — identity/tunnel/bd path"
+    fail "L8(c+d): node bd write ($pid) did NOT reach host Dolt — tunnel/BEADS_DOLT env"
   fi
 
   # (e) RECOVER from a tunnel drop: kill the host-side tunnel, confirm the keepalive
-  # re-establishes + the agent's next bd lands. The recover axis the gate requires.
+  # re-establishes + a node bd write lands again. The recover axis the gate requires.
   echo "  dropping the tunnel to test recovery..."
   pkill -f -- "-R ${GT_DOLT_PORT_FWD:-13307}" 2>/dev/null || true
-  sleep 25   # keepalive/respawn window
-  before2="$(bd count 2>/dev/null || echo 0)"
-  node_run 30 <<NODE >/dev/null
-\$TMUX_AS send-keys -t $SESSION -l 'bd create "F2 L8 recover probe \$(date +%s)" --description "post tunnel-drop"'
-\$TMUX_AS send-keys -t $SESSION Enter
+  sleep 30   # keepalive/respawn window (open-remote-tunnel.sh re-establishes)
+  rpid="$(node_run 40 <<NODE
+export GT_DOLT_HOST=127.0.0.1 GT_DOLT_PORT=13307 BEADS_DOLT_SERVER_HOST=127.0.0.1 BEADS_DOLT_PORT=13307
+cd /opt/gastown/$CREW && bd create "F2 L8 recover probe" -d "post tunnel-drop" 2>&1 | grep -i 'created issue' | grep -oE '[a-z]+-[a-z0-9]+' | head -1
 NODE
-  sleep 45
-  after2="$(bd count 2>/dev/null || echo 0)"
-  if [ "${after2:-0}" -gt "${before2:-0}" ]; then
-    pass "L8(e): agent RECOVERED from tunnel drop — bd landed after re-establish ($before2 -> $after2)"
+)"
+  rpid="$(echo "$rpid" | grep -v '^\[ssm\]' | grep -oE '[a-z]+-[a-z0-9]+' | head -1)"
+  sleep 5
+  rshown="$(cd "$RIGDIR" && bd show "$rpid" 2>&1)"
+  if [ -n "$rpid" ] && ! echo "$rshown" | grep -q "no issue found" && echo "$rshown" | grep -qF "$rpid"; then
+    pass "L8(e): RECOVERED from tunnel drop — node bd ($rpid) landed in host Dolt after re-establish"
   else
-    fail "L8(e): agent did NOT recover from tunnel drop (count $before2 -> $after2) — keepalive/recover path"
+    fail "L8(e): did NOT recover from tunnel drop ($rpid not in host Dolt) — keepalive/recover path"
   fi
 
   # OBSERVABILITY: gt crew status shows the remote node host-side (no ssh).
@@ -171,11 +195,12 @@ NODE
     fail "L8 observability: gt crew status did not surface the remote node; out: $(echo "$st" | grep -i remote | head -1)"
   fi
 
-  # Teardown: stop the node agent (clean up the test spawn).
+  # Teardown: stop the node agent + remove the probe beads (don't litter the DB).
   node_run 30 <<NODE >/dev/null
 \$TMUX_AS kill-session -t $SESSION 2>/dev/null || true
 NODE
-  echo "  (teardown: killed node tmux session $SESSION)"
+  ( cd "${RIGDIR:-$HOME/gt}" && bd delete "${pid:-}" "${rpid:-}" --force >/dev/null 2>&1 ) || true
+  echo "  (teardown: killed node tmux session $SESSION; removed probe beads)"
 fi
 
 echo ""
