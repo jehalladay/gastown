@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS mayor_lease (
   town            varchar(64)  PRIMARY KEY,
   holder          varchar(128),                 -- client id of the active MAYOR (NULL = unheld)
   holder_since    datetime,                     -- when the current holder acquired (audit)
-  last_heartbeat  datetime,                     -- renewed every heartbeat; staleness => handoff-eligible
+  last_heartbeat  datetime,                     -- renewed every heartbeat, staleness => handoff-eligible
   pinned_client   varchar(128),                 -- permanent-precedence override (NULL = none)
   epoch           bigint NOT NULL DEFAULT 0     -- fencing token; +1 on every acquisition
 );
@@ -84,8 +84,21 @@ SELECT COUNT(*) FROM mayor_clients
 func splitDDL(ddl string) []string {
 	var out []string
 	cur := ""
-	for _, r := range ddl {
+	inComment := false // inside a -- line comment: ignore ';' until newline
+	rs := []rune(ddl)
+	for i := 0; i < len(rs); i++ {
+		r := rs[i]
 		cur += string(r)
+		if inComment {
+			if r == '\n' {
+				inComment = false
+			}
+			continue
+		}
+		if r == '-' && i+1 < len(rs) && rs[i+1] == '-' {
+			inComment = true
+			continue
+		}
 		if r == ';' {
 			if s := trimStmt(cur); s != "" {
 				out = append(out, s)
