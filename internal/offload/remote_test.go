@@ -19,8 +19,9 @@ func TestExtractScriptsRemote(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 
-	// The suite the verb drives.
-	for _, name := range []string{"open-remote-tunnel.sh", "ssm-run.sh"} {
+	// The suite the verb drives. provision-node.sh is step 0 (clone+prime); it shells to
+	// $HERE/ssm-run.sh, which must extract alongside it — bash -n catches a broken vendor.
+	for _, name := range []string{"open-remote-tunnel.sh", "ssm-run.sh", "provision-node.sh"} {
 		path := filepath.Join(dir, name)
 		info, err := os.Stat(path)
 		if err != nil {

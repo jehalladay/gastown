@@ -85,6 +85,36 @@ func StartTunnel(scriptDir, node, fwdPort string, env []string) (cmd *exec.Cmd, 
 	return cmd, logPath, nil
 }
 
+// RunProvision runs the extracted provision-node.sh in the FOREGROUND (blocking) to
+// stage the node's toolchain + clone/prime the crew workspace BEFORE the agent launches.
+// It is the verb's step 0: without it the agent has no /opt/gastown/<crew> clone, so bd
+// has no DB and claude has no identity (the prod-confirmed no-Provision bug, hq-wwxq).
+// crewName drives `--agent --crew <crewName>` (the --crew flag is REQUIRED for the clone;
+// --agent alone stages toolchain only). repoURL/branch are optional positional args
+// (provision defaults them when ""); env carries AWS/bucket overrides + TUNNEL_SSH_KEY.
+// Returns the combined output; a non-zero exit (provision failed) is an error so the
+// verb fails loud rather than launching against an unprovisioned node.
+func RunProvision(scriptDir, node, crewName, repoURL, branch string, env []string) (string, error) {
+	script := filepath.Join(scriptDir, "provision-node.sh")
+	if _, err := os.Stat(script); err != nil {
+		return "", fmt.Errorf("provision-node.sh not found at %s (not vendored into the embed?): %w", script, err)
+	}
+	args := []string{"--agent", "--crew", crewName, node}
+	if repoURL != "" {
+		args = append(args, repoURL)
+		if branch != "" {
+			args = append(args, branch)
+		}
+	}
+	cmd := exec.Command(script, args...)
+	cmd.Env = append(os.Environ(), env...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("provision-node.sh --agent --crew %s %s failed: %w", crewName, node, err)
+	}
+	return string(out), nil
+}
+
 // SSMRun executes nodeScript on node via the extracted ssm-run.sh (aws ssm
 // send-command + poll). Used to launch the agent loop (the systemd-run line) on
 // the node. timeoutSecs bounds the SSM command (the launched scope outlives it —

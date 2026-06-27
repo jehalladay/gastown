@@ -129,6 +129,22 @@ func runCrewStartRemote(crewMgr *crew.Manager, r *rig.Rig, name, node string) er
 
 	plan := buildRemoteSpawnPlan(node, worker.Name, scriptDir, env, startupCmd, sessionName)
 
+	// 0. Provision the node FIRST: stage toolchain + clone/prime the crew workspace at
+	//    /opt/gastown/<crew> (with .beads redirect + claude config). WITHOUT this the agent
+	//    launches bare with no clone -> bd has no DB, claude has no identity (the
+	//    prod-confirmed no-Provision bug, hq-wwxq: runCrewStartRemote built plan.Provision
+	//    but never ran it). provision-node.sh --agent --crew is idempotent, so re-spawning
+	//    an already-provisioned node just re-syncs. Blocking — the tunnel + launch below
+	//    depend on the clone existing.
+	fmt.Printf("→ Provisioning %s (toolchain + crew clone /opt/gastown/%s)...\n", node, worker.Name)
+	// provision reads AWS creds from the inherited env + generates/uses its own persistent
+	// tunnel key under OFFLOAD_STATE_DIR; it needs no TUNNEL_SSH_KEY overlay (that's the
+	// tunnel script's input).
+	provOut, err := offload.RunProvision(scriptDir, node, worker.Name, "", "", nil)
+	if err != nil {
+		return fmt.Errorf("provisioning %s for crew %s: %w\n%s", node, worker.Name, err, provOut)
+	}
+
 	// 1. Open the host-initiated reverse tunnel in the background (keepalive loop).
 	//    The agent's bd/gt-mail reach the host Dolt through it (GT_DOLT_PORT=13307).
 	fmt.Printf("→ Opening reverse tunnel to %s (node:%s → host Dolt)...\n", node, remoteDoltFwdPort)

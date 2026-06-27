@@ -16,8 +16,12 @@ Do NOT reimplement the SSM/presign/Bedrock logic in Go.
   pick-node/ssm-run/setup-secrets unchanged since 33bb5d6.)
 - Files: offload.sh, pick-node.sh, ssm-run.sh, setup-secrets.sh
 
-warm-pool.sh / provision-node.sh are deliberately NOT vendored — they're
-offload_ops' lane and not needed for core dispatch.
+warm-pool.sh is deliberately NOT vendored — offload_ops' lane, not needed for
+core dispatch.
+
+provision-node.sh IS vendored (see the F2 section below) — `gt crew start
+--remote` must run it as step 0 to clone+prime the crew workspace, so it needs
+to ship in the embed for host-independence.
 
 ## Flag contract (frozen by offload_eng — safe to wrap)
 offload.sh: `-n <node>` `-p <suffix>` `-b` (bedrock) `-f` (fresh) + positional
@@ -45,6 +49,13 @@ reimplement the ssh-R/SSM mechanics in Go.
 ## Vendored from
 - Repo: reactivecli (committed master copy at refinery/rig/scripts/)
 - Rev: `55dcd9c` (open-remote-tunnel.sh; F2 host-side reverse tunnel, e2e-proven)
+- provision-node.sh — Rev `a3cc9fc` (offload_ops' crew dir; the `gt crew start
+  --remote` step-0 provisioner: `--agent --crew <name>` stages toolchain + clones
+  /opt/gastown/<crew> + writes the .beads tunnel-redirect + pre-seeds claude config.
+  Only sibling dep is ssm-run.sh, also vendored here, so `$HERE/ssm-run.sh`
+  resolves in the extracted tempdir. All config is env-overridable: AWS_PROFILE_SCIENCE,
+  AWS_REGION, OFFLOAD_BUCKET, OFFLOAD_STATE_DIR, BEADS_DB. OWNED by offload_ops —
+  re-vendor + bump this Rev when they change a contract-affecting line.)
 
 ## Key contract (eng_sr2-confirmed — no script change, gt drives it)
 open-remote-tunnel.sh `<instance-id> [fwd-port]` opens a host-initiated
