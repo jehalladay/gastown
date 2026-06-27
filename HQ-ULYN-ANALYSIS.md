@@ -52,3 +52,28 @@ resolution half (routes alias, option 1) is a 1-line routes.jsonl add I can make
 decides to keep `reactivecli-` as the prefix — but that's a town-data decision (rc vs
 reactivecli), not mine to make unilaterally. Need eng_sr2 + likely mayor on the prefix
 decision before any change. Do NOT migrate live prod-Dolt beads without an isolated env + explicit go.
+
+---
+
+## RESOLUTION (applied + C-8 verified, 2026-06-27)
+Root confirmed WITH eng_sr2: the rig DB's stored `issue_prefix` metadata = `reactivecli`
+(verified `BEADS_DIR=reactivecli/.beads bd config list` → `issue_prefix = reactivecli`),
+diverged from config.yaml/routes (`rc`). bd mints from the DB's stored prefix, so all ~613
+beads are `reactivecli-*`. NOT a Go-code defect — GetPrefixForRig correctly returns `rc`,
+detectPrefix returns `gt`; the resolver works. eng_sr2 settled my two wrong hypotheses: the
+leak is the bd SUBPROCESS minting from DB metadata, independent of any gt computation.
+
+**FIX (Option 1, resolution-side / my hq-ulyn lane):** appended
+`{"prefix":"reactivecli-","path":"reactivecli"}` to town `.beads/routes.jsonl`.
+Non-destructive, additive, reversible (backup `/tmp/routes.jsonl.bak-1bf9e26`). Safe under
+ALL mayor canonical-prefix options (legacy `reactivecli-` beads need the alias regardless).
+
+**C-8 VERIFICATION:** before — `gt bd show reactivecli-4tla` = "no issue found",
+`gt hook reactivecli-4tla` = "bead not found". After — both resolve; `gt hook --dry-run
+reactivecli-4tla` → "Would run: bd update reactivecli-4tla --status=hooked". Works from town
+root too. `hq-` routing unaffected (no regression). The exact repro now works.
+
+**REMAINING (eng_sr2's hq-9y0x mint half):** DB `issue_prefix=reactivecli` still mints new
+beads `reactivecli-*`. Held for mayor's canonical-prefix decision (A keep / B rc-forward / C
+migrate). The alias covers READ/resolution for both bugs now; the mint decision is hygiene
+for NEW beads, not a blocker.
