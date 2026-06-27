@@ -237,6 +237,19 @@ func buildRemoteLaunchScript(node, crewName, sessionName string, launchArgv []st
 	cloneDir := remoteNodeHome + "/" + crewName
 	provisionHint := fmt.Sprintf("provision-node.sh --agent --crew %s %s", crewName, node)
 
+	// The .claude/settings.json install, run AS THE LOGIN USER (see below). Build it as one
+	// inner script we shell-quote into `sudo -u <user> bash -c '<this>'`. Single-quoted
+	// heredoc body so nothing inside expands.
+	settingsInstall := "install -d -m 700 " + cloneDir + "/.claude && cat > " + cloneDir + "/.claude/settings.json <<'GTSETTINGS'\n" +
+		"{\n" +
+		"  \"permissions\": { \"defaultMode\": \"bypassPermissions\" },\n" +
+		"  \"hooks\": {\n" +
+		"    \"SessionStart\": [ { \"matcher\": \"\", \"hooks\": [ { \"type\": \"command\", \"command\": \"gt prime --hook\" } ] } ],\n" +
+		"    \"PreCompact\": [ { \"matcher\": \"\", \"hooks\": [ { \"type\": \"command\", \"command\": \"gt prime --hook\" } ] } ]\n" +
+		"  }\n" +
+		"}\n" +
+		"GTSETTINGS"
+
 	return fmt.Sprintf(
 		"set -e\n"+
 			// Export the node toolchain PATH FIRST so `bd` resolves (it's at
@@ -262,18 +275,11 @@ func buildRemoteLaunchScript(node, crewName, sessionName string, launchArgv []st
 			// so it re-primes after compaction, not just first session). gt prime takes the
 			// off-town env-only path on the node (no local town; identity from GT_ROLE/GT_RIG/
 			// GT_CREW). Without this the agent launches bare (no identity) — the dogfood-found
-			// gap. Written by the login user so it owns the file; bypassPermissions matches the
-			// local crew settings. `gt` resolves on the node PATH (exported above).
-			"install -d -m 700 %s/.claude\n"+
-			"cat > %s/.claude/settings.json <<'GTSETTINGS'\n"+
-			"{\n"+
-			"  \"permissions\": { \"defaultMode\": \"bypassPermissions\" },\n"+
-			"  \"hooks\": {\n"+
-			"    \"SessionStart\": [ { \"matcher\": \"\", \"hooks\": [ { \"type\": \"command\", \"command\": \"gt prime --hook\" } ] } ],\n"+
-			"    \"PreCompact\": [ { \"matcher\": \"\", \"hooks\": [ { \"type\": \"command\", \"command\": \"gt prime --hook\" } ] } ]\n"+
-			"  }\n"+
-			"}\n"+
-			"GTSETTINGS\n"+
+			// gap. MUST be written AS THE LOGIN USER (this SSM script runs as root): claude
+			// runs as the login user and can't read a root-owned drwx------ .claude/, so a
+			// root write makes the hook silently unreadable. bypassPermissions matches the
+			// local crew settings; `gt` resolves on the node PATH the user's tmux exports.
+			"sudo -u %s bash -c %s\n"+
 			"echo '[remote-spawn] installed .claude/settings.json (SessionStart: gt prime --hook)'\n"+
 			// Launch the persistent agent in a detached tmux session (bare interactive
 			// claude — -c sets cwd; survives the SSM exit; PTY keeps it a loop). Runs
@@ -291,7 +297,7 @@ func buildRemoteLaunchScript(node, crewName, sessionName string, launchArgv []st
 			"echo '[remote-spawn] persistent agent live + beacon sent: %s'\n",
 		remoteNodePATH, bdV52Commit, bdV52Commit,
 		cloneDir, cloneDir, provisionHint,
-		cloneDir, cloneDir, // install -d <clone>/.claude ; cat > <clone>/.claude/settings.json
+		resolveRemoteNodeUser(), shellQuote(settingsInstall), // sudo -u <user> bash -c '<settings install>'
 		shellJoin(launchArgv),
 		nodeTmux, sessionName,
 		nodeTmux, sessionName,
