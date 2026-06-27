@@ -49,13 +49,24 @@ reimplement the ssh-R/SSM mechanics in Go.
 ## Vendored from
 - Repo: reactivecli (committed master copy at refinery/rig/scripts/)
 - Rev: `55dcd9c` (open-remote-tunnel.sh; F2 host-side reverse tunnel, e2e-proven)
-- provision-node.sh — Rev `a3cc9fc` (offload_ops' crew dir; the `gt crew start
-  --remote` step-0 provisioner: `--agent --crew <name>` stages toolchain + clones
-  /opt/gastown/<crew> + writes the .beads tunnel-redirect + pre-seeds claude config.
-  Only sibling dep is ssm-run.sh, also vendored here, so `$HERE/ssm-run.sh`
+- provision-node.sh — **Source of truth: `reactivecli` repo, path
+  `refinery/rig/provision-node.sh`** (offload_ops' committed master copy; the
+  `crew/offload_ops/provision-node.sh` working copy is identical). Rev `a3cc9fc`
+  (`fix(offload): --agent refreshes ssm-agent Port plugin`). It's the `gt crew
+  start --remote` step-0 provisioner: `--agent --crew <name>` stages toolchain +
+  clones /opt/gastown/<crew> + writes the .beads tunnel-redirect + pre-seeds claude
+  config. Only sibling dep is ssm-run.sh, also vendored here, so `$HERE/ssm-run.sh`
   resolves in the extracted tempdir. All config is env-overridable: AWS_PROFILE_SCIENCE,
-  AWS_REGION, OFFLOAD_BUCKET, OFFLOAD_STATE_DIR, BEADS_DB. OWNED by offload_ops —
-  re-vendor + bump this Rev when they change a contract-affecting line.)
+  AWS_REGION, OFFLOAD_BUCKET, OFFLOAD_STATE_DIR, BEADS_DB.
+  - OWNED by offload_ops. **Re-vendor trigger:** any change to
+    `refinery/rig/provision-node.sh` that touches the `--agent`/`--crew` clone+prime
+    behavior, the .beads-redirect it writes, or the toolchain it stages. When that
+    happens: re-copy the file here + bump this Rev. **Drift risk:** if the embed lags
+    offload_ops' live script, a spawn provisions the OLD way and can pass dogfood once
+    then rot — so the Rev above MUST track offload_ops' HEAD for this file.
+    `go test ./internal/offload/` (TestExtractScriptsRemote) confirms the embed
+    extracts + `bash -n` parses, but does NOT detect content drift — that's a
+    human/offload_ops re-vendor discipline, same as the other 4 scripts.
 
 ## Key contract (eng_sr2-confirmed — no script change, gt drives it)
 open-remote-tunnel.sh `<instance-id> [fwd-port]` opens a host-initiated
